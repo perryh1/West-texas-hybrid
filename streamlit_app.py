@@ -60,7 +60,7 @@ def get_live_and_history():
         if ws <= 1.0: ws = r['hourly']['wind_speed_10m'][curr_h]
         return price_hist, ghi, ws
     except:
-        return pd.Series(np.random.uniform(15, 45, 168), index=dates), 795.0, 22.0
+        return pd.Series(np.random.uniform(15, 45, 168)), 795.0, 22.0
 
 # --- UI SETUP ---
 st.set_page_config(page_title="WTX Asset Tracker", layout="wide")
@@ -72,7 +72,7 @@ with st.sidebar:
     st.header("🛠️ Dashboard Tools")
     if st.button("Reset to Default Config"):
         for key in st.session_state.keys():
-            if key != "password_correct": # Keep the user logged in
+            if key != "password_correct":
                 del st.session_state[key]
         st.rerun()
 
@@ -103,20 +103,26 @@ st.markdown("---")
 st.subheader("🎯 Hybrid Optimization Engine")
 ideal_miner_mw = int((solar_cap + wind_cap) * 0.20)
 ideal_batt_mw = int((solar_cap + wind_cap) * 0.30)
-opt_col1, opt_col2, opt_col3 = st.columns([1, 1, 2])
+
+opt_col1, opt_col2 = st.columns([1, 1])
+
 with opt_col1:
-    st.write("**Current Config**")
-    st.write(f"Miners: {miner_mw} MW")
-    st.write(f"Battery: {batt_mw} MW")
-with opt_col2:
-    st.write("**Recommended Ideal**")
-    st.write(f"Miners: :green[{ideal_miner_mw} MW]")
-    st.write(f"Battery: :green[{ideal_batt_mw} MW]")
-with opt_col3:
     current_ann_hybrid_val = (BASE_REVENUE['1y_mining_per_mw'] * miner_mw) + (BASE_REVENUE['1y_batt_per_mw'] * batt_mw)
     ideal_ann_hybrid_val = (BASE_REVENUE['1y_mining_per_mw'] * ideal_miner_mw) + (BASE_REVENUE['1y_batt_per_mw'] * ideal_batt_mw)
     delta = ideal_ann_hybrid_val - current_ann_hybrid_val
+    
+    st.write(f"**Current:** {miner_mw}MW Miners | {batt_mw}MW Battery")
+    st.write(f"**Ideal:** :green[{ideal_miner_mw}MW Miners] | :green[{ideal_batt_mw}MW Battery]")
     st.metric("Optimization Delta (Annual)", f"${delta:,.0f}", delta=f"{(delta/current_ann_hybrid_val)*100:.1f}% Yield Increase")
+
+with opt_col2:
+    # Projection Chart
+    fig_opt = go.Figure(data=[
+        go.Bar(name='Current', x=['Annual Hybrid Rev'], y=[current_ann_hybrid_val], marker_color='gray'),
+        go.Bar(name='Ideal', x=['Annual Hybrid Rev'], y=[ideal_ann_hybrid_val], marker_color='green')
+    ])
+    fig_opt.update_layout(barmode='group', height=200, margin=dict(l=0, r=0, t=20, b=0))
+    st.plotly_chart(fig_opt, use_container_width=True)
 
 # --- SECTION 3: LIVE POWER FLOW ---
 st.markdown("---")
