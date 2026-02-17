@@ -22,16 +22,33 @@ BASE_REVENUE = {
     "6m_batt_per_mw": 22500.0
 }
 
-# --- AUTHENTICATION ---
+# --- AUTHENTICATION & SUMMARY PAGE ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
     if st.session_state.password_correct: return True
+    
     st.title("⚡ West Texas Asset Strategy Dashboard")
-    pwd = st.text_input("Enter Access Password (123)", type="password")
+    
+    with st.expander("📖 System Overview & Metric Guide", expanded=True):
+        st.markdown("""
+        ### **How it Works**
+        This decision engine optimizes power flow between the **Grid**, **Miners**, and **Battery** to maximize yield.
+
+        ### **The Revenue Pillars**
+        * **⚡ Grid (Baseline):** Revenue from selling 100% of generation to the market.
+        * **⛏️ Mining Alpha:** Extra profit made by mining when market prices are low. 
+        * **🔋 Battery Alpha:** Yield from charging during negative prices and discharging during spikes.
+        """)
+    
+    st.markdown("---")
+    # Password removed from the prompt blurb as requested
+    pwd = st.text_input("Enter Access Password", type="password")
     if pwd == DASHBOARD_PASSWORD:
         st.session_state.password_correct = True
         st.rerun()
+    elif pwd != "":
+        st.error("Incorrect password")
     return False
 
 if not check_password(): st.stop()
@@ -42,9 +59,10 @@ def get_live_and_history():
     try:
         iso = gridstatus.Ercot()
         end = pd.Timestamp.now(tz="US/Central")
-        start = end - pd.Timedelta(days=7)
+        start = end - pd.Timedelta(days=30)
         df_price = iso.get_rtm_lmp(start=start, end=end, verbose=False)
         price_hist = df_price[df_price['Location'] == 'HB_WEST'].set_index('Time').sort_index()['LMP']
+        
         url = "https://api.open-meteo.com/v1/forecast"
         params = {"latitude": LAT, "longitude": LONG, "current": ["shortwave_radiation", "wind_speed_10m"], "hourly": ["shortwave_radiation", "wind_speed_10m"], "timezone": "auto", "forecast_days": 1}
         r = requests.get(url, params=params).json()
@@ -53,7 +71,7 @@ def get_live_and_history():
         if ghi <= 1.0 and 8 <= curr_h <= 17: ghi = r['hourly']['shortwave_radiation'][curr_h]
         if ws <= 1.0: ws = r['hourly']['wind_speed_10m'][curr_h]
         return price_hist, ghi, ws
-    except: return pd.Series(np.random.uniform(15, 45, 168)), 795.0, 22.0
+    except: return pd.Series(np.random.uniform(15, 45, 720)), 795.0, 22.0
 
 price_hist, ghi, ws = get_live_and_history()
 current_price = price_hist.iloc[-1]
@@ -78,51 +96,4 @@ with c2:
     m_cost_th = st.slider("Miner Cost ($/TH)", 1.0, 50.0, 15.0, 0.5, key="m_cost_s")
 with c3:
     hp_cents = st.slider("Hashprice (¢/TH)", 1.0, 10.0, 4.0, 0.1, key="hp_s")
-    m_eff = st.slider("Efficiency (J/TH)", 10.0, 35.0, 19.0, 0.5, key="eff_s")
-    breakeven = (1e6 / m_eff) * (hp_cents / 100.0) / 24.0
-    st.metric("Breakeven Floor", f"${breakeven:.2f}/MWh")
-
-# --- SECTION 2: CAPEX & ROI ANALYSIS ---
-st.markdown("---")
-st.subheader("💰 Miner Capex & ROI Analysis")
-
-# Calculations
-total_th = (miner_mw * 1000000) / m_eff
-total_capex = total_th * m_cost_th
-ann_alpha = BASE_REVENUE['1y_mining_per_mw'] * miner_mw * 0.4
-roi_years = total_capex / ann_alpha if ann_alpha > 0 else 0
-irr_est = (ann_alpha / total_capex) * 100 if total_capex > 0 else 0
-
-rc1, rc2, rc3, rc4 = st.columns(4)
-rc1.metric("Total Miner Capex", f"${total_capex:,.0f}", help="Total cost based on fleet size, efficiency, and $/TH.")
-rc2.metric("Est. Annual Alpha", f"${ann_alpha:,.0f}", help="Projected incremental profit above grid baseline.")
-rc3.metric("ROI (Years)", f"{roi_years:.2f} Yrs")
-rc4.metric("Est. IRR", f"{irr_est:.1f}%")
-
-# --- SECTION 3: OPTIMIZATION ---
-st.markdown("---")
-st.subheader("🎯 Hybrid Optimization Engine")
-ideal_m = int((solar_cap + wind_cap) * 0.20)
-ideal_b = int((solar_cap + wind_cap) * 0.30)
-curr_val = (BASE_REVENUE['1y_mining_per_mw'] * miner_mw) + (BASE_REVENUE['1y_batt_per_mw'] * batt_mw)
-ideal_val = (BASE_REVENUE['1y_mining_per_mw'] * ideal_m) + (BASE_REVENUE['1y_batt_per_mw'] * ideal_b)
-st.metric("Optimization Delta (Annual)", f"${(ideal_val - curr_val):,.0f}", delta=f"{((ideal_val-curr_val)/curr_val)*100:.1f}% Yield Increase")
-
-# --- SECTION 4: LIVE POWER FLOW ---
-st.markdown("---")
-st.subheader("📊 Live Power Generation & Allocation")
-s_gen = min(solar_cap * (ghi / 1000.0) * 0.85, solar_cap) if ghi > 0 else 0
-w_gen = 0 if (ws/3.6) < 3 else (wind_cap if (ws/3.6) >= 12 else (((ws/3.6)-3)/9)**3 * wind_cap)
-total_gen = s_gen + w_gen
-
-if current_price < breakeven:
-    m_load = min(miner_mw, total_gen)
-    g_export = max(0, total_gen - m_load)
-    m_alpha = m_load * (breakeven - max(0, current_price))
-else:
-    m_load, g_export, m_alpha = 0, total_gen, 0
-
-pc1, pc2, pc3 = st.columns(3)
-pc1.metric("Total Generation", f"{total_gen:.1f} MW")
-pc2.metric("Miner Power Load", f"{m_load:.1f} MW")
-pc3.metric("Grid Export", f"{g_export:.1f} MW")
+    m_eff = st.slider("Efficiency (J/TH)", 10
