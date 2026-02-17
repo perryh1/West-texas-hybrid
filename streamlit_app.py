@@ -32,13 +32,11 @@ def check_password():
     if pwd == DASHBOARD_PASSWORD:
         st.session_state.password_correct = True
         st.rerun()
-    elif pwd != "":
-        st.error("Incorrect password")
     return False
 
 if not check_password(): st.stop()
 
-# --- DATA FETCHING ---
+# --- ROBUST DATA FETCHING ---
 @st.cache_data(ttl=300)
 def get_live_and_history():
     try:
@@ -62,8 +60,7 @@ def get_live_and_history():
         if ws <= 1.0: ws = r['hourly']['wind_speed_10m'][curr_h]
         return price_hist, ghi, ws
     except:
-        dates = pd.date_range(end=datetime.now(), periods=168, freq='h')
-        return pd.Series(np.random.uniform(15, 45, 168), index=dates), 795.0, 22.0
+        return pd.Series(np.random.uniform(15, 45, 168)), 795.0, 22.0
 
 # --- UI SETUP ---
 st.set_page_config(page_title="WTX Asset Tracker", layout="wide")
@@ -89,34 +86,46 @@ with st.container():
         breakeven = (1e6 / m_eff) * (hp_cents / 100.0) / 24.0
         st.metric("Breakeven Floor", f"${breakeven:.2f}/MWh")
 
-# --- LIVE CALCULATIONS ---
+# --- SECTION 2: LIVE POWER FLOW ---
+st.markdown("---")
+st.subheader("📊 Live Power Generation & Allocation")
+
 s_gen = min(solar_cap * (ghi / 1000.0) * 0.85, solar_cap) if ghi > 0 else 0
 w_ms = ws / 3.6
 w_gen = 0 if w_ms < 3 or w_ms > 25 else (wind_cap if w_ms >= 12 else ((w_ms-3)/9)**3 * wind_cap)
 total_gen = s_gen + w_gen
 
-# Baseline Grid is the floor
-cur_grid = total_gen * current_price
-
-# Hybrid layers are calculated as Alpha on top
+# Allocation Logic
 if current_price < breakeven:
-    # Mining Alpha: Difference between Mining Breakeven and market price
-    cur_mining = miner_mw * (breakeven - max(0, current_price))
-    cur_battery = 0
+    # Mining Priority
+    mining_load = min(miner_mw, total_gen)
+    grid_export = max(0, total_gen - mining_load)
+    # Alpha Calc
+    m_alpha = mining_load * (breakeven - max(0, current_price))
+    b_alpha = 0
 else:
-    # Spike Alpha: Battery discharge value
-    cur_mining = 0
-    cur_battery = batt_mw * current_price
+    # Grid Priority (Spike)
+    mining_load = 0
+    grid_export = total_gen
+    # Alpha Calc
+    m_alpha = 0
+    b_alpha = batt_mw * current_price
 
+pc1, pc2, pc3 = st.columns(3)
+pc1.metric("Total Generation", f"{total_gen:.1f} MW", help="Total real-time power from Solar + Wind.")
+pc2.metric("Miner Power Load", f"{mining_load:.1f} MW", help="Amount of local generation currently powering miners.")
+pc3.metric("Grid Export", f"{grid_export:.1f} MW", help="Excess power being sent to the grid.")
+
+# --- SECTION 3: REVENUE ALPHA ---
 st.markdown("---")
 st.subheader("🟢 Live Performance (Hybrid Alpha Model)")
 l1, l2, l3, l4 = st.columns(4)
 l1.metric("Current Price", f"${current_price:.2f}")
-l2.metric("Grid (Baseline)", f"${cur_grid:,.2f}/hr", help="Raw value of generation if sold 100% to grid.")
-l3.metric("Mining Alpha", f"${cur_mining:,.2f}/hr", help="Incremental value added by miners above grid price.")
-l4.metric("Battery Alpha", f"${cur_battery:,.2f}/hr", help="Incremental value added by battery discharge.")
+l2.metric("Grid Baseline", f"${(total_gen * current_price):,.2f}/hr", help="Value if 100% of power was sold to grid.")
+l3.metric("Mining Alpha", f"${m_alpha:,.2f}/hr", help="Extra profit made by mining instead of selling to grid.")
+l4.metric("Battery Alpha", f"${b_alpha:,.2f}/hr", help="Profit from battery discharge during spikes.")
 
-# --- PERFORMANCE METRICS ---
+# --- SECTION 4: PERFORMANCE METRICS ---
 st.markdown("---")
 st.subheader("📅 Performance Metrics (Cumulative Alpha)")
 
@@ -126,19 +135,17 @@ def calc_alpha_split(p_series, m_mw, b_mw, gen_mw):
         grid_base += (gen_mw * p)
         if p < breakeven:
             m_alpha += m_mw * (breakeven - max(0, p))
-            if p < 0:
-                b_alpha += min(b_mw, max(0, gen_mw-m_mw)) * abs(p)
+            if p < 0: b_alpha += min(b_mw, max(0, gen_mw-m_mw)) * abs(p)
         else:
             b_alpha += b_mw * p
     return m_alpha, b_alpha, grid_base
 
-# History
 ma24, ba24, g24 = calc_alpha_split(price_hist.tail(24), miner_mw, batt_mw, total_gen)
 ma7, ba7, g7 = calc_alpha_split(price_hist.tail(168), miner_mw, batt_mw, total_gen)
 
 s_scale, w_scale = solar_cap / 100.0, wind_cap / 100.0
 y1_base = (BASE_REVENUE['1y_grid_solar'] * s_scale) + (BASE_REVENUE['1y_grid_wind'] * w_scale)
-y1_m_alpha = BASE_REVENUE['1y_mining_per_mw'] * miner_mw * 0.4 # Est. Alpha portion
+y1_m_alpha = BASE_REVENUE['1y_mining_per_mw'] * miner_mw * 0.4
 y1_b_alpha = BASE_REVENUE['1y_batt_per_mw'] * batt_mw
 
 m6_base = (BASE_REVENUE['6m_grid_solar'] * s_scale) + (BASE_REVENUE['6m_grid_wind'] * w_scale)
