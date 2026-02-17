@@ -60,12 +60,21 @@ def get_live_and_history():
         if ws <= 1.0: ws = r['hourly']['wind_speed_10m'][curr_h]
         return price_hist, ghi, ws
     except:
-        return pd.Series(np.random.uniform(15, 45, 168)), 795.0, 22.0
+        return pd.Series(np.random.uniform(15, 45, 168), index=dates), 795.0, 22.0
 
 # --- UI SETUP ---
 st.set_page_config(page_title="WTX Asset Tracker", layout="wide")
 price_hist, ghi, ws = get_live_and_history()
 current_price = price_hist.iloc[-1]
+
+# --- SIDEBAR: RESET TOOL ---
+with st.sidebar:
+    st.header("🛠️ Dashboard Tools")
+    if st.button("Reset to Default Config"):
+        for key in st.session_state.keys():
+            if key != "password_correct": # Keep the user logged in
+                del st.session_state[key]
+        st.rerun()
 
 st.title("⚡ West Texas Asset Dashboard")
 
@@ -74,26 +83,27 @@ with st.container():
     st.markdown("### ⚙️ System Configuration")
     c1, c2, c3 = st.columns(3)
     with c1:
-        solar_cap = st.slider("Solar Capacity (MW)", 0, 1000, 100)
-        wind_cap = st.slider("Wind Capacity (MW)", 0, 1000, 200)
+        st.markdown("**🏭 Generation Capacity**")
+        solar_cap = st.slider("Solar Capacity (MW)", 0, 1000, 100, key="solar_s")
+        wind_cap = st.slider("Wind Capacity (MW)", 0, 1000, 100, key="wind_s")
     with c2:
-        miner_mw = st.number_input("Miner Fleet (MW)", value=35)
-        batt_mw = st.number_input("Battery Size (MW)", value=60)
-        soc = st.slider("Battery SoC (%)", 0, 100, 85)
+        st.markdown("**⛏️ Hybrid Assets**")
+        miner_mw = st.number_input("Miner Fleet (MW)", value=35, key="miner_n")
+        batt_mw = st.number_input("Battery Size (MW)", value=60, key="batt_n")
+        soc = st.slider("Battery SoC (%)", 0, 100, 85, key="soc_s")
     with c3:
-        hp_cents = st.slider("Hashprice (¢/TH)", 1.0, 10.0, 4.0, 0.1)
-        m_eff = st.slider("Efficiency (J/TH)", 10.0, 35.0, 19.0, 0.5)
+        st.markdown("**💰 Market Variables**")
+        hp_cents = st.slider("Hashprice (¢/TH)", 1.0, 10.0, 4.0, 0.1, key="hp_s")
+        m_eff = st.slider("Efficiency (J/TH)", 10.0, 35.0, 19.0, 0.5, key="eff_s")
         breakeven = (1e6 / m_eff) * (hp_cents / 100.0) / 24.0
         st.metric("Breakeven Floor", f"${breakeven:.2f}/MWh")
 
 # --- SECTION 2: OPTIMIZATION ENGINE ---
 st.markdown("---")
 st.subheader("🎯 Hybrid Optimization Engine")
-
 ideal_miner_mw = int((solar_cap + wind_cap) * 0.20)
 ideal_batt_mw = int((solar_cap + wind_cap) * 0.30)
 opt_col1, opt_col2, opt_col3 = st.columns([1, 1, 2])
-
 with opt_col1:
     st.write("**Current Config**")
     st.write(f"Miners: {miner_mw} MW")
@@ -141,7 +151,6 @@ l4.metric("Battery Alpha", f"${b_alpha:,.2f}/hr")
 # --- SECTION 5: PERFORMANCE METRICS ---
 st.markdown("---")
 st.subheader("📅 Performance Metrics (Cumulative Alpha)")
-
 def calc_alpha_split(p_series, m_mw, b_mw, gen_mw):
     m_alpha, b_alpha, grid_base = 0, 0, 0
     for p in p_series:
@@ -154,7 +163,6 @@ def calc_alpha_split(p_series, m_mw, b_mw, gen_mw):
 
 ma24, ba24, g24 = calc_alpha_split(price_hist.tail(24), miner_mw, batt_mw, total_gen)
 ma7, ba7, g7 = calc_alpha_split(price_hist.tail(168), miner_mw, batt_mw, total_gen)
-
 s_scale, w_scale = solar_cap / 100.0, wind_cap / 100.0
 y1_base = (BASE_REVENUE['1y_grid_solar'] * s_scale) + (BASE_REVENUE['1y_grid_wind'] * w_scale)
 y1_m_alpha, y1_b_alpha = BASE_REVENUE['1y_mining_per_mw'] * miner_mw * 0.4, BASE_REVENUE['1y_batt_per_mw'] * batt_mw
