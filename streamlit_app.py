@@ -29,19 +29,23 @@ def check_password():
     if st.session_state.password_correct: return True
     
     st.title("⚡ West Texas Asset Strategy Dashboard")
-    with st.expander("📖 System Overview & Metric Guide", expanded=True):
+    with st.expander("📖 System Overview & Data Sources", expanded=True):
         st.markdown("""
         ### **How it Works**
         This decision engine optimizes power flow between the **Grid**, **Miners**, and **Battery** to maximize yield.
         
+        ### **Data Sources & Frequency**
+        * **☀️ Solar & 💨 Wind Data:** Pulled from the **Open-Meteo API** using high-resolution weather models for Midland, TX (31.997, -102.077).
+        * **💰 Market Pricing:** Real-time **ERCOT HB_WEST** electricity prices are pulled via the **gridstatus** library.
+        * **🔄 Refresh Rate:** All data is polled and recalculated every **5 minutes** to ensure live dispatch accuracy.
+
         ### **The Three Core Pillars**
-        1. **⚡ Grid (Base):** Revenue from selling 100% of generation to the market (Status Quo).
+        1. **⚡ Grid (Base):** Revenue from selling 100% of generation to the market.
         2. **⛏️ Mining Alpha:** Extra profit made by mining when BTC yield exceeds grid prices.
         3. **🔋 Battery Alpha:** Yield from charging during negative prices and discharging during spikes.
         """)
     
     st.markdown("---")
-    # Password text removed from prompt as requested
     pwd = st.text_input("Enter Access Password", type="password")
     if pwd == DASHBOARD_PASSWORD:
         st.session_state.password_correct = True
@@ -66,6 +70,7 @@ def get_live_and_history():
         r = requests.get(url, params=params).json()
         ghi, ws = r['current']['shortwave_radiation'], r['current']['wind_speed_10m']
         curr_h = datetime.now().hour
+        # Robust Logic for Night/Forecast Fallback
         if ghi <= 1.0 and 8 <= curr_h <= 17: ghi = r['hourly']['shortwave_radiation'][curr_h]
         if ws <= 1.0: ws = r['hourly']['wind_speed_10m'][curr_h]
         return price_hist, ghi, ws
