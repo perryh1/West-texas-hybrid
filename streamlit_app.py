@@ -62,7 +62,6 @@ def get_ercot_price_history_30d():
         start = end - pd.Timedelta(days=30)
         
         # GridStatus get_rtm_lmp can take a date range
-        # Note: This might take a few seconds to load
         df = iso.get_rtm_lmp(start=start, end=end, verbose=False)
         
         # Filter for West Hub
@@ -104,7 +103,7 @@ def calculate_wind_output(wind_kmh):
 
 st.set_page_config(page_title="West Texas Strategy", layout="wide")
 
-# 1. Fetch Data (Real-time + 30 Day History)
+# 1. Fetch Data
 price_history_30d = get_ercot_price_history_30d()
 current_price = price_history_30d.iloc[-1] if not price_history_30d.empty else 0.0
 ghi, wind_speed = get_current_weather()
@@ -173,9 +172,9 @@ sc3.success("Scenario C: Hybrid Optimized")
 sc3.metric("Instant Rev", f"${rev_c:,.2f} / hr", delta=f"${rev_c - rev_a:,.2f} vs Status Quo")
 sc3.markdown(f":{color_c}[{status_c}]")
 
-# 5. HISTORICAL PERFORMANCE (24H, 7D, 30D)
+# 5. HISTORICAL PERFORMANCE (Broken Down)
 st.markdown("---")
-st.markdown("### 📅 Cumulative Performance (Backtest Estimation)")
+st.markdown("### 📅 Cumulative Performance (Mining vs. Grid Split)")
 
 # Resample price history to hourly
 hourly_prices = price_history_30d.resample('h').mean()
@@ -183,48 +182,70 @@ last_24h = hourly_prices.tail(24)
 last_7d = hourly_prices.tail(24*7)
 last_30d = hourly_prices.tail(24*30)
 
-def calculate_period_revenue(prices_series):
-    """Calculates Revenue for A and C given a price series."""
-    # Scenario A: Grid Only
-    rev_a = (prices_series * total_renewables_mw).sum()
+def calculate_split_revenue(prices_series):
+    """Calculates Total, Mining Portion, and Grid/Battery Portion."""
+    mining_portion = 0.0
+    grid_battery_portion = 0.0
     
-    # Scenario C: Hybrid
-    # Logic: If P < Breakeven, Revenue = Breakeven (Mining). If P > Breakeven, Revenue = Price (Grid).
-    # Note: This ignores the battery charging "avoided cost" nuance for the backtest to keep it fast, 
-    # but captures the main "Mining Floor" value.
-    hybrid_prices = prices_series.apply(lambda p: max(p, MINING_BREAKEVEN_PRICE) if p < MINING_BREAKEVEN_PRICE else p)
-    
-    # Revenue = (Miners * Hybrid_Price) + (Excess_Gen * Market_Price)
-    # Note: Excess Gen only sells to market, not miners
-    rev_c = (hybrid_prices * MINER_CAPACITY_MW).sum() + (prices_series * max(0, total_renewables_mw - MINER_CAPACITY_MW)).sum()
-    return rev_a, rev_c
+    # We iterate to handle the logic split (Vectorized would be faster but this is clearer)
+    for price in prices_series:
+        if price < 0:
+            # Negative: Mining + Charging (Avoided Cost)
+            # Charging 'Avoided Cost' counts towards 'Mining/Storage' efficiency bucket
+            charging_mw = min(BATTERY_MW, total_renewables_mw)
+            mining_mw = min(MINER_CAPACITY_MW, max(0, total_renewables_mw - charging_mw))
+            
+            avoided_cost = charging_mw * abs(price)
+            mining_rev = mining_mw * MINING_BREAKEVEN_PRICE
+            
+            mining_portion += (avoided_cost + mining_rev)
+            
+        elif price < MINING_BREAKEVEN_PRICE:
+            # Low: Mine + Sell Excess
+            mining_portion += (MINER_CAPACITY_MW * MINING_BREAKEVEN_PRICE)
+            excess = max(0, total_renewables_mw - MINER_CAPACITY_MW)
+            grid_battery_portion += (excess * price)
+            
+        else:
+            # High: Discharge + Sell All
+            # Everything goes to Grid bucket
+            grid_battery_portion += ((total_renewables_mw + BATTERY_MW) * price)
+            
+    total = mining_portion + grid_battery_portion
+    return total, mining_portion, grid_battery_portion
 
-# Calculate for all periods
-rev_24h_a, rev_24h_c = calculate_period_revenue(last_24h)
-rev_7d_a, rev_7d_c = calculate_period_revenue(last_7d)
-rev_30d_a, rev_30d_c = calculate_period_revenue(last_30d)
+# Calculate Splits
+t_24, m_24, g_24 = calculate_split_revenue(last_24h)
+t_7d, m_7d, g_7d = calculate_split_revenue(last_7d)
+t_30, m_30, g_30 = calculate_split_revenue(last_30d)
 
-kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+# Display Columns
+kpi1, kpi2, kpi3 = st.columns(3)
 
 with kpi1:
     st.subheader("Last 24 Hours")
-    st.metric("Hybrid Revenue", f"${rev_24h_c:,.0f}", delta=f"${rev_24h_c - rev_24h_a:,.0f} vs Grid")
+    st.metric("Total Hybrid Revenue", f"${t_24:,.0f}")
+    st.markdown(f"""
+    - ⛏️ **Mining:** ${m_24:,.0f} ({m_24/t_24*100:.1f}%)
+    - ⚡ **Grid/Batt:** ${g_24:,.0f} ({g_24/t_24*100:.1f}%)
+    """)
 
 with kpi2:
     st.subheader("Last 7 Days")
-    st.metric("Hybrid Revenue", f"${rev_7d_c:,.0f}", delta=f"${rev_7d_c - rev_7d_a:,.0f} vs Grid")
+    st.metric("Total Hybrid Revenue", f"${t_7d:,.0f}")
+    st.markdown(f"""
+    - ⛏️ **Mining:** ${m_7d:,.0f} ({m_7d/t_7d*100:.1f}%)
+    - ⚡ **Grid/Batt:** ${g_7d:,.0f} ({g_7d/t_7d*100:.1f}%)
+    """)
 
 with kpi3:
     st.subheader("Last 30 Days")
-    st.metric("Hybrid Revenue", f"${rev_30d_c:,.0f}", delta=f"${rev_30d_c - rev_30d_a:,.0f} vs Grid")
+    st.metric("Total Hybrid Revenue", f"${t_30:,.0f}")
+    st.markdown(f"""
+    - ⛏️ **Mining:** ${m_30:,.0f} ({m_30/t_30*100:.1f}%)
+    - ⚡ **Grid/Batt:** ${g_30:,.0f} ({g_30/t_30*100:.1f}%)
+    """)
 
-with kpi4:
-    st.subheader("Revenue Per MW")
-    # Using 30 Day Average
-    rpm_c = rev_30d_c / (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW) if (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW) > 0 else 0
-    rpm_a = rev_30d_a / (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW) if (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW) > 0 else 0
-    st.metric("Hybrid / MW (30d)", f"${rpm_c:,.2f}", delta=f"${rpm_c - rpm_a:,.2f}")
-    
 # 6. Raw Data
 with st.expander("View Raw Data Feeds"):
     st.dataframe(price_history_30d.tail(10).rename("LMP Price"))
