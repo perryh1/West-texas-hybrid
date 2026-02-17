@@ -52,16 +52,17 @@ if not check_password():
 
 # --- DATA FETCHING FUNCTIONS (CACHED) ---
 
-@st.cache_data(ttl=300)
-def get_ercot_price_history():
-    """Fetches last 7 days of price history for calculations."""
+@st.cache_data(ttl=3600) # Cache for 1 hour since 30 days is a lot of data
+def get_ercot_price_history_30d():
+    """Fetches last 30 days of price history for calculations."""
     try:
         iso = gridstatus.Ercot()
-        # Fetch last 7 days of LMPs
+        # Fetch last 30 days of LMPs
         end = pd.Timestamp.now(tz="US/Central")
-        start = end - pd.Timedelta(days=7)
+        start = end - pd.Timedelta(days=30)
         
         # GridStatus get_rtm_lmp can take a date range
+        # Note: This might take a few seconds to load
         df = iso.get_rtm_lmp(start=start, end=end, verbose=False)
         
         # Filter for West Hub
@@ -69,7 +70,7 @@ def get_ercot_price_history():
         return west_hub['LMP']
     except Exception as e:
         # Fallback: Generate dummy history for demo if API fails
-        dates = pd.date_range(end=datetime.now(), periods=168*4, freq='15min')
+        dates = pd.date_range(end=datetime.now(), periods=24*30, freq='1h')
         return pd.Series(np.random.uniform(-10, 100, len(dates)), index=dates)
 
 @st.cache_data(ttl=300)
@@ -103,9 +104,9 @@ def calculate_wind_output(wind_kmh):
 
 st.set_page_config(page_title="West Texas Strategy", layout="wide")
 
-# 1. Fetch Real-Time Data
-price_history = get_ercot_price_history()
-current_price = price_history.iloc[-1] if not price_history.empty else 0.0
+# 1. Fetch Data (Real-time + 30 Day History)
+price_history_30d = get_ercot_price_history_30d()
+current_price = price_history_30d.iloc[-1] if not price_history_30d.empty else 0.0
 ghi, wind_speed = get_current_weather()
 
 solar_mw = calculate_solar_output(ghi)
@@ -131,23 +132,34 @@ st.markdown("### 💰 Instant Revenue (Hourly Rate)")
 rev_a = total_renewables_mw * current_price
 rev_b = MINER_CAPACITY_MW * MINING_BREAKEVEN_PRICE
 
-# Hybrid Logic (Scenario C)
+# Hybrid Logic (Scenario C) with BTM Correction
 rev_c = 0.0
 status_c = ""
 color_c = "blue"
 
 if current_price < 0:
-    rev_c = (abs(current_price) * BATTERY_MW) + (MINER_CAPACITY_MW * MINING_BREAKEVEN_PRICE)
-    status_c = "🔴 NEGATIVE PRICE: Charging & Mining"
+    charging_mw = min(BATTERY_MW, total_renewables_mw)
+    leftover_mw = max(0, total_renewables_mw - charging_mw)
+    mining_mw = min(MINER_CAPACITY_MW, leftover_mw)
+    avoided_cost = charging_mw * abs(current_price)
+    mining_rev = mining_mw * MINING_BREAKEVEN_PRICE
+    rev_c = mining_rev + avoided_cost
+    status_c = "🔴 NEGATIVE PRICE: Charging from Renewables"
     color_c = "red"
+
 elif current_price < MINING_BREAKEVEN_PRICE:
+    mining_rev = MINER_CAPACITY_MW * MINING_BREAKEVEN_PRICE
     excess_gen = max(0, total_renewables_mw - MINER_CAPACITY_MW)
-    rev_c = (MINER_CAPACITY_MW * MINING_BREAKEVEN_PRICE) + (excess_gen * current_price)
+    grid_rev = excess_gen * current_price
+    rev_c = mining_rev + grid_rev
     status_c = "🟡 LOW PRICE: Mining Active"
     color_c = "orange"
+
 else:
-    rev_c = (total_renewables_mw * current_price) + (BATTERY_MW * current_price)
-    status_c = "🟢 HIGH PRICE: Discharging to Grid"
+    gen_rev = total_renewables_mw * current_price
+    battery_discharge_rev = BATTERY_MW * current_price
+    rev_c = gen_rev + battery_discharge_rev
+    status_c = "🟢 HIGH PRICE: Discharging Battery to Grid"
     color_c = "green"
 
 sc1, sc2, sc3 = st.columns(3)
@@ -161,57 +173,58 @@ sc3.success("Scenario C: Hybrid Optimized")
 sc3.metric("Instant Rev", f"${rev_c:,.2f} / hr", delta=f"${rev_c - rev_a:,.2f} vs Status Quo")
 sc3.markdown(f":{color_c}[{status_c}]")
 
-# 5. HISTORICAL PERFORMANCE (24H & Weekly)
+# 5. HISTORICAL PERFORMANCE (24H, 7D, 30D)
 st.markdown("---")
 st.markdown("### 📅 Cumulative Performance (Backtest Estimation)")
 
-# We simulate historical revenue by applying the current output (MW) to historical prices
-# Note: In a real app, you would log actual historical MW output. 
-# Here we estimate "Potential Revenue" if current weather persisted (Simplified View).
-
-# Resample price history to hourly for easier calculation
-hourly_prices = price_history.resample('h').mean()
+# Resample price history to hourly
+hourly_prices = price_history_30d.resample('h').mean()
 last_24h = hourly_prices.tail(24)
 last_7d = hourly_prices.tail(24*7)
+last_30d = hourly_prices.tail(24*30)
 
-# Calculate Revenue Streams (Vectorized)
-# Scenario A (Grid Only)
-rev_24h_a = (last_24h * total_renewables_mw).sum()
-rev_7d_a = (last_7d * total_renewables_mw).sum()
+def calculate_period_revenue(prices_series):
+    """Calculates Revenue for A and C given a price series."""
+    # Scenario A: Grid Only
+    rev_a = (prices_series * total_renewables_mw).sum()
+    
+    # Scenario C: Hybrid
+    # Logic: If P < Breakeven, Revenue = Breakeven (Mining). If P > Breakeven, Revenue = Price (Grid).
+    # Note: This ignores the battery charging "avoided cost" nuance for the backtest to keep it fast, 
+    # but captures the main "Mining Floor" value.
+    hybrid_prices = prices_series.apply(lambda p: max(p, MINING_BREAKEVEN_PRICE) if p < MINING_BREAKEVEN_PRICE else p)
+    
+    # Revenue = (Miners * Hybrid_Price) + (Excess_Gen * Market_Price)
+    # Note: Excess Gen only sells to market, not miners
+    rev_c = (hybrid_prices * MINER_CAPACITY_MW).sum() + (prices_series * max(0, total_renewables_mw - MINER_CAPACITY_MW)).sum()
+    return rev_a, rev_c
 
-# Scenario C (Hybrid Estimate)
-# We apply the simple logic: Max(Price, Breakeven) for the miner portion
-# This is a rough approximation for the dashboard view
-hybrid_prices = last_24h.apply(lambda p: max(p, MINING_BREAKEVEN_PRICE) if p < MINING_BREAKEVEN_PRICE else p)
-rev_24h_c = (hybrid_prices * MINER_CAPACITY_MW).sum() + (last_24h * (total_renewables_mw - MINER_CAPACITY_MW)).sum()
+# Calculate for all periods
+rev_24h_a, rev_24h_c = calculate_period_revenue(last_24h)
+rev_7d_a, rev_7d_c = calculate_period_revenue(last_7d)
+rev_30d_a, rev_30d_c = calculate_period_revenue(last_30d)
 
-hybrid_prices_7d = last_7d.apply(lambda p: max(p, MINING_BREAKEVEN_PRICE) if p < MINING_BREAKEVEN_PRICE else p)
-rev_7d_c = (hybrid_prices_7d * MINER_CAPACITY_MW).sum() + (last_7d * (total_renewables_mw - MINER_CAPACITY_MW)).sum()
-
-
-kpi1, kpi2, kpi3 = st.columns(3)
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
 
 with kpi1:
-    st.subheader("Last 24 Hours Revenue")
-    st.metric("Renewable Only", f"${rev_24h_a:,.0f}")
-    st.metric("Hybrid Optimized", f"${rev_24h_c:,.0f}", delta=f"${rev_24h_c - rev_24h_a:,.0f}")
+    st.subheader("Last 24 Hours")
+    st.metric("Hybrid Revenue", f"${rev_24h_c:,.0f}", delta=f"${rev_24h_c - rev_24h_a:,.0f} vs Grid")
 
 with kpi2:
-    st.subheader("Last 7 Days Revenue")
-    st.metric("Renewable Only", f"${rev_7d_a:,.0f}")
-    st.metric("Hybrid Optimized", f"${rev_7d_c:,.0f}", delta=f"${rev_7d_c - rev_7d_a:,.0f}")
+    st.subheader("Last 7 Days")
+    st.metric("Hybrid Revenue", f"${rev_7d_c:,.0f}", delta=f"${rev_7d_c - rev_7d_a:,.0f} vs Grid")
 
 with kpi3:
-    st.subheader("Revenue Per MW (Efficiency)")
-    # Total Rev / Total Capacity (200MW for Renewables)
-    rpm_a = rev_7d_a / (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW)
-    # Total Rev / Total Capacity (200MW + 60MW Battery + 35MW Miner is distinct... usually we just divide by generation cap)
-    rpm_c = rev_7d_c / (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW)
-    
-    st.metric("Renewable Only / MW", f"${rpm_a:,.2f} / MW")
-    st.metric("Hybrid / MW", f"${rpm_c:,.2f} / MW", delta=f"${rpm_c - rpm_a:,.2f}")
-    st.caption("Based on 7-Day Performance")
+    st.subheader("Last 30 Days")
+    st.metric("Hybrid Revenue", f"${rev_30d_c:,.0f}", delta=f"${rev_30d_c - rev_30d_a:,.0f} vs Grid")
 
+with kpi4:
+    st.subheader("Revenue Per MW")
+    # Using 30 Day Average
+    rpm_c = rev_30d_c / (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW) if (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW) > 0 else 0
+    rpm_a = rev_30d_a / (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW) if (SOLAR_CAPACITY_MW + WIND_CAPACITY_MW) > 0 else 0
+    st.metric("Hybrid / MW (30d)", f"${rpm_c:,.2f}", delta=f"${rpm_c - rpm_a:,.2f}")
+    
 # 6. Raw Data
 with st.expander("View Raw Data Feeds"):
-    st.dataframe(price_history.tail(10).rename("LMP Price"))
+    st.dataframe(price_history_30d.tail(10).rename("LMP Price"))
