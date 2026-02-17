@@ -7,7 +7,7 @@ import gridstatus
 from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
-DASHBOARD_PASSWORD = "1"
+DASHBOARD_PASSWORD = "Hardin2026"
 LAT, LONG = 31.997, -102.077
 
 # --- STATIC HISTORICAL BASELINE (Per 100MW Unit) ---
@@ -64,7 +64,7 @@ def get_live_and_history():
         return pd.Series(np.random.uniform(15, 45, 168), index=dates), 795.0, 22.0
 
 # --- UI SETUP ---
-st.set_page_config(page_title="WTX Strategy Optimizer", layout="wide")
+st.set_page_config(page_title="WTX Asset Tracker", layout="wide")
 price_hist, ghi, ws = get_live_and_history()
 current_price = price_hist.iloc[-1]
 
@@ -78,8 +78,8 @@ with st.container():
         solar_cap = st.slider("Solar Capacity (MW)", 0, 1000, 100)
         wind_cap = st.slider("Wind Capacity (MW)", 0, 1000, 200)
     with c2:
-        miner_mw = st.number_input("Current Miners (MW)", value=35)
-        batt_mw = st.number_input("Current Battery (MW)", value=60)
+        miner_mw = st.number_input("Miner Fleet (MW)", value=35)
+        batt_mw = st.number_input("Battery Size (MW)", value=60)
         soc = st.slider("Battery SoC (%)", 0, 100, 85)
     with c3:
         hp_cents = st.slider("Hashprice (¢/TH)", 1.0, 10.0, 4.0, 0.1)
@@ -87,96 +87,81 @@ with st.container():
         breakeven = (1e6 / m_eff) * (hp_cents / 100.0) / 24.0
         st.metric("Breakeven Floor", f"${breakeven:.2f}/MWh")
 
-# --- SECTION 2: OPTIMIZATION ENGINE ---
-st.markdown("---")
-st.subheader("🎯 Hybrid Optimization Engine")
-
-# Ideal Recommendations Logic
-ideal_miner_mw = int((solar_cap + wind_cap) * 0.20)
-ideal_batt_mw = int((solar_cap + wind_cap) * 0.30)
-
-opt_col1, opt_col2, opt_col3 = st.columns([1, 1, 2])
-
-with opt_col1:
-    st.write("**Current Config**")
-    st.write(f"Miners: {miner_mw} MW")
-    st.write(f"Battery: {batt_mw} MW")
-
-with opt_col2:
-    st.write("**Recommended Ideal**")
-    st.write(f"Miners: :green[{ideal_miner_mw} MW]")
-    st.write(f"Battery: :green[{ideal_batt_mw} MW]")
-
-with opt_col3:
-    current_ann_rev = (BASE_REVENUE['1y_mining_per_mw'] * miner_mw) + (BASE_REVENUE['1y_batt_per_mw'] * batt_mw)
-    ideal_ann_rev = (BASE_REVENUE['1y_mining_per_mw'] * ideal_miner_mw) + (BASE_REVENUE['1y_batt_per_mw'] * ideal_batt_mw)
-    delta = ideal_ann_rev - current_ann_rev
-    
-    st.metric("Optimization Delta (Annual)", f"${delta:,.0f}", delta=f"{(delta/current_ann_rev)*100:.1f}% Yield Increase")
-    st.caption("Ideal sizing minimizes curtailment and maximizes high-price grid exports.")
-
 # --- LIVE CALCULATIONS ---
 s_gen = min(solar_cap * (ghi / 1000.0) * 0.85, solar_cap) if ghi > 0 else 0
 w_ms = ws / 3.6
 w_gen = 0 if w_ms < 3 or w_ms > 25 else (wind_cap if w_ms >= 12 else ((w_ms-3)/9)**3 * wind_cap)
 total_gen = s_gen + w_gen
 
+# Baseline: 100% of renewables sold to grid at current market price
+cur_baseline = total_gen * current_price
+
+# Strategy Logic
 if current_price < 0:
-    cur_m_rev = (min(batt_mw, total_gen) * abs(current_price)) + (min(miner_mw, max(0, total_gen-batt_mw)) * breakeven)
-    cur_g_rev = 0
+    cur_mining = (min(miner_mw, total_gen) * breakeven)
+    cur_battery = (min(batt_mw, max(0, total_gen - miner_mw)) * abs(current_price))
+    cur_grid = 0
+elif current_price < breakeven:
+    cur_mining = miner_mw * breakeven
+    cur_battery = 0
+    cur_grid = 0
 else:
-    cur_m_rev = miner_mw * breakeven if current_price < breakeven else 0
-    cur_g_rev = (max(0, total_gen - miner_mw) * current_price) if current_price < breakeven else (total_gen + batt_mw) * current_price
+    cur_mining = 0
+    cur_battery = batt_mw * current_price
+    cur_grid = total_gen * current_price
 
 st.markdown("---")
-st.subheader("🟢 Live Performance")
+st.subheader("🟢 Live Performance vs. Baseline")
 l1, l2, l3, l4 = st.columns(4)
-l1.metric("Current Price", f"${current_price:.2f}")
-l2.metric("Total Output", f"{total_gen:.1f} MW")
-l3.metric("Mining Rev", f"${cur_m_rev:,.2f}/hr")
-l4.metric("Grid Rev", f"${cur_g_rev:,.2f}/hr")
+l1.metric("Market Price", f"${current_price:.2f}/MWh")
+l2.metric("Grid (Baseline)", f"${cur_baseline:,.2f}/hr", help="Revenue if no Miners/Battery were present")
+l3.metric("Hybrid Alpha", f"${(cur_grid + cur_mining + cur_battery - cur_baseline):,.2f}/hr", delta_color="normal")
+l4.metric("Live Site Total", f"${(cur_grid + cur_mining + cur_battery):,.2f}/hr")
 
-# --- PERFORMANCE METRICS BREAKDOWN ---
+# --- PERFORMANCE METRICS ---
 st.markdown("---")
-st.subheader("📅 Performance Metrics (Daily, Weekly, Scaled Monthly)")
+st.subheader("📅 Performance Metrics (Alpha vs. Baseline)")
 
-def calc_detailed_rev(p_series, m_mw, b_mw, gen_mw):
-    m_rev, b_rev, base_rev = 0, 0, 0
+def calc_with_baseline(p_series, m_mw, b_mw, gen_mw):
+    m_rev, b_rev, g_rev, base_rev = 0, 0, 0, 0
     for p in p_series:
         base_rev += (gen_mw * p)
         if p < 0:
-            b_rev += (min(b_mw, gen_mw) * abs(p))
-            m_rev += (min(m_mw, max(0, gen_mw-b_mw)) * breakeven)
+            m_rev += (min(m_mw, gen_mw) * breakeven)
+            b_rev += (min(b_mw, max(0, gen_mw-m_mw)) * abs(p))
         elif p < breakeven:
             m_rev += (m_mw * breakeven)
-            g_rem = (max(0, gen_mw - m_mw) * p)
-            # base_rev already handles gen_mw * p, so we just track the Hybrid components here
         else:
+            g_rev += (gen_mw * p)
             b_rev += (b_mw * p)
-    return m_rev, b_rev, base_rev
+    return m_rev, b_rev, g_rev, base_rev
 
-# Backtests
-m24, b24, base24 = calc_detailed_rev(price_hist.tail(24), miner_mw, batt_mw, total_gen)
-m7, b7, base7 = calc_detailed_rev(price_hist.tail(168), miner_mw, batt_mw, total_gen)
+# History
+m24, b24, g24, base24 = calc_with_baseline(price_hist.tail(24), miner_mw, batt_mw, total_gen)
+m7, b7, g7, base7 = calc_with_baseline(price_hist.tail(168), miner_mw, batt_mw, total_gen)
 
 # Scaled Monthly/Yearly
 s_scale, w_scale = solar_cap / 100.0, wind_cap / 100.0
 y1_base = (BASE_REVENUE['1y_grid_solar'] * s_scale) + (BASE_REVENUE['1y_grid_wind'] * w_scale)
-y1_mining = BASE_REVENUE['1y_mining_per_mw'] * miner_mw
-y1_batt = BASE_REVENUE['1y_batt_per_mw'] * batt_mw
+y1_m, y1_b = BASE_REVENUE['1y_mining_per_mw'] * miner_mw, BASE_REVENUE['1y_batt_per_mw'] * batt_mw
+y1_g = y1_base * 0.15 # Approx 15% capture during spikes
 
 m6_base = (BASE_REVENUE['6m_grid_solar'] * s_scale) + (BASE_REVENUE['6m_grid_wind'] * w_scale)
-m6_mining = BASE_REVENUE['6m_mining_per_mw'] * miner_mw
-m6_batt = BASE_REVENUE['6m_batt_per_mw'] * batt_mw
+m6_m, m6_b = BASE_REVENUE['6m_mining_per_mw'] * miner_mw, BASE_REVENUE['6m_batt_per_mw'] * batt_mw
+m6_g = m6_base * 0.15
 
-def display_metric_box(label, total, mining, battery, base):
+def display_baseline_box(label, m_rev, b_rev, g_rev, base):
+    hybrid_total = m_rev + b_rev + g_rev
     st.write(f"**{label}**")
-    st.metric("Total Hybrid Revenue", f"${total:,.0f}", delta=f"${(total-base):,.0f} vs Baseline")
-    st.caption(f"⛏️ Mining: ${mining:,.0f} | 🔋 Battery: ${battery:,.0f}")
+    st.metric("Hybrid Total", f"${hybrid_total:,.0f}", delta=f"${(hybrid_total - base):,.0f} vs Baseline")
+    st.markdown(f"- ⚡ **Grid:** `${g_rev:,.0f}`")
+    st.markdown(f"- ⛏️ **Mining:** `${m_rev:,.0f}`")
+    st.markdown(f"- 🔋 **Battery:** `${b_rev:,.0f}`")
+    st.caption(f"Standalone Baseline: ${base:,.0f}")
     st.markdown("---")
 
 h1, h2, h3, h4 = st.columns(4)
-with h1: display_metric_box("Last 24 Hours", m24+b24+base24, m24, b24, base24)
-with h2: display_metric_box("Last 7 Days", m7+b7+base7, m7, b7, base7)
-with h3: display_metric_box("Last 6 Months", m6_base+m6_mining+m6_batt, m6_mining, m6_batt, m6_base)
-with h4: display_metric_box("Last 1 Year", y1_base+y1_mining+y1_batt, y1_mining, y1_batt, y1_base)
+with h1: display_baseline_box("Last 24 Hours", m24, b24, g24, base24)
+with h2: display_baseline_box("Last 7 Days", m7, b7, g7, base7)
+with h3: display_baseline_box("Last 6 Months", m6_m, m6_b, m6_g, m6_base)
+with h4: display_baseline_box("Last 1 Year", y1_m, y1_b, y1_g, y1_base)
