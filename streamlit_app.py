@@ -32,6 +32,8 @@ def check_password():
     if pwd == DASHBOARD_PASSWORD:
         st.session_state.password_correct = True
         st.rerun()
+    elif pwd != "":
+        st.error("Incorrect password")
     return False
 
 if not check_password(): st.stop()
@@ -70,7 +72,7 @@ current_price = price_hist.iloc[-1]
 
 st.title("⚡ West Texas Asset Dashboard")
 
-# --- SECTION 1: SYSTEM CONFIG ---
+# --- SECTION 1: CONFIG ---
 with st.container():
     st.markdown("### ⚙️ System Configuration")
     c1, c2, c3 = st.columns(3)
@@ -93,75 +95,67 @@ w_ms = ws / 3.6
 w_gen = 0 if w_ms < 3 or w_ms > 25 else (wind_cap if w_ms >= 12 else ((w_ms-3)/9)**3 * wind_cap)
 total_gen = s_gen + w_gen
 
-# Baseline: 100% of renewables sold to grid at current market price
-cur_baseline = total_gen * current_price
+# Baseline Grid is the floor
+cur_grid = total_gen * current_price
 
-# Strategy Logic
-if current_price < 0:
-    cur_mining = (min(miner_mw, total_gen) * breakeven)
-    cur_battery = (min(batt_mw, max(0, total_gen - miner_mw)) * abs(current_price))
-    cur_grid = 0
-elif current_price < breakeven:
-    cur_mining = miner_mw * breakeven
+# Hybrid layers are calculated as Alpha on top
+if current_price < breakeven:
+    # Mining Alpha: Difference between Mining Breakeven and market price
+    cur_mining = miner_mw * (breakeven - max(0, current_price))
     cur_battery = 0
-    cur_grid = 0
 else:
+    # Spike Alpha: Battery discharge value
     cur_mining = 0
     cur_battery = batt_mw * current_price
-    cur_grid = total_gen * current_price
 
 st.markdown("---")
-st.subheader("🟢 Live Performance vs. Baseline")
+st.subheader("🟢 Live Performance (Hybrid Alpha Model)")
 l1, l2, l3, l4 = st.columns(4)
-l1.metric("Market Price", f"${current_price:.2f}/MWh")
-l2.metric("Grid (Baseline)", f"${cur_baseline:,.2f}/hr", help="Revenue if no Miners/Battery were present")
-l3.metric("Hybrid Alpha", f"${(cur_grid + cur_mining + cur_battery - cur_baseline):,.2f}/hr", delta_color="normal")
-l4.metric("Live Site Total", f"${(cur_grid + cur_mining + cur_battery):,.2f}/hr")
+l1.metric("Current Price", f"${current_price:.2f}")
+l2.metric("Grid (Baseline)", f"${cur_grid:,.2f}/hr", help="Raw value of generation if sold 100% to grid.")
+l3.metric("Mining Alpha", f"${cur_mining:,.2f}/hr", help="Incremental value added by miners above grid price.")
+l4.metric("Battery Alpha", f"${cur_battery:,.2f}/hr", help="Incremental value added by battery discharge.")
 
 # --- PERFORMANCE METRICS ---
 st.markdown("---")
-st.subheader("📅 Performance Metrics (Alpha vs. Baseline)")
+st.subheader("📅 Performance Metrics (Cumulative Alpha)")
 
-def calc_with_baseline(p_series, m_mw, b_mw, gen_mw):
-    m_rev, b_rev, g_rev, base_rev = 0, 0, 0, 0
+def calc_alpha_split(p_series, m_mw, b_mw, gen_mw):
+    m_alpha, b_alpha, grid_base = 0, 0, 0
     for p in p_series:
-        base_rev += (gen_mw * p)
-        if p < 0:
-            m_rev += (min(m_mw, gen_mw) * breakeven)
-            b_rev += (min(b_mw, max(0, gen_mw-m_mw)) * abs(p))
-        elif p < breakeven:
-            m_rev += (m_mw * breakeven)
+        grid_base += (gen_mw * p)
+        if p < breakeven:
+            m_alpha += m_mw * (breakeven - max(0, p))
+            if p < 0:
+                b_alpha += min(b_mw, max(0, gen_mw-m_mw)) * abs(p)
         else:
-            g_rev += (gen_mw * p)
-            b_rev += (b_mw * p)
-    return m_rev, b_rev, g_rev, base_rev
+            b_alpha += b_mw * p
+    return m_alpha, b_alpha, grid_base
 
 # History
-m24, b24, g24, base24 = calc_with_baseline(price_hist.tail(24), miner_mw, batt_mw, total_gen)
-m7, b7, g7, base7 = calc_with_baseline(price_hist.tail(168), miner_mw, batt_mw, total_gen)
+ma24, ba24, g24 = calc_alpha_split(price_hist.tail(24), miner_mw, batt_mw, total_gen)
+ma7, ba7, g7 = calc_alpha_split(price_hist.tail(168), miner_mw, batt_mw, total_gen)
 
-# Scaled Monthly/Yearly
 s_scale, w_scale = solar_cap / 100.0, wind_cap / 100.0
 y1_base = (BASE_REVENUE['1y_grid_solar'] * s_scale) + (BASE_REVENUE['1y_grid_wind'] * w_scale)
-y1_m, y1_b = BASE_REVENUE['1y_mining_per_mw'] * miner_mw, BASE_REVENUE['1y_batt_per_mw'] * batt_mw
-y1_g = y1_base * 0.15 # Approx 15% capture during spikes
+y1_m_alpha = BASE_REVENUE['1y_mining_per_mw'] * miner_mw * 0.4 # Est. Alpha portion
+y1_b_alpha = BASE_REVENUE['1y_batt_per_mw'] * batt_mw
 
 m6_base = (BASE_REVENUE['6m_grid_solar'] * s_scale) + (BASE_REVENUE['6m_grid_wind'] * w_scale)
-m6_m, m6_b = BASE_REVENUE['6m_mining_per_mw'] * miner_mw, BASE_REVENUE['6m_batt_per_mw'] * batt_mw
-m6_g = m6_base * 0.15
+m6_m_alpha = BASE_REVENUE['6m_mining_per_mw'] * miner_mw * 0.4
+m6_b_alpha = BASE_REVENUE['6m_batt_per_mw'] * batt_mw
 
-def display_baseline_box(label, m_rev, b_rev, g_rev, base):
-    hybrid_total = m_rev + b_rev + g_rev
+def display_alpha_box(label, m_alpha, b_alpha, base):
+    total = m_alpha + b_alpha + base
     st.write(f"**{label}**")
-    st.metric("Hybrid Total", f"${hybrid_total:,.0f}", delta=f"${(hybrid_total - base):,.0f} vs Baseline")
-    st.markdown(f"- ⚡ **Grid:** `${g_rev:,.0f}`")
-    st.markdown(f"- ⛏️ **Mining:** `${m_rev:,.0f}`")
-    st.markdown(f"- 🔋 **Battery:** `${b_rev:,.0f}`")
-    st.caption(f"Standalone Baseline: ${base:,.0f}")
+    st.metric("Total Site Revenue", f"${total:,.0f}", delta=f"${(m_alpha + b_alpha):,.0f} Hybrid Alpha")
+    st.markdown(f"- ⚡ **Grid (Base):** `${base:,.0f}`")
+    st.markdown(f"- ⛏️ **Mining Alpha:** `${m_alpha:,.0f}`")
+    st.markdown(f"- 🔋 **Battery Alpha:** `${b_alpha:,.0f}`")
     st.markdown("---")
 
 h1, h2, h3, h4 = st.columns(4)
-with h1: display_baseline_box("Last 24 Hours", m24, b24, g24, base24)
-with h2: display_baseline_box("Last 7 Days", m7, b7, g7, base7)
-with h3: display_baseline_box("Last 6 Months", m6_m, m6_b, m6_g, m6_base)
-with h4: display_baseline_box("Last 1 Year", y1_m, y1_b, y1_g, y1_base)
+with h1: display_alpha_box("Last 24 Hours", ma24, ba24, g24)
+with h2: display_alpha_box("Last 7 Days", ma7, ba7, g7)
+with h3: display_alpha_box("Last 6 Months", m6_m_alpha, m6_b_alpha, m6_base)
+with h4: display_alpha_box("Last 1 Year", y1_m_alpha, y1_b_alpha, y1_base)
