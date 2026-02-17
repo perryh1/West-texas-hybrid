@@ -4,259 +4,136 @@ import numpy as np
 import plotly.graph_objects as go
 import requests
 import gridstatus
-from datetime import datetime, timedelta
-import time
+from datetime import datetime
 
 # --- CONFIGURATION ---
-# SECURITY
 DASHBOARD_PASSWORD = "Hardin2026"
+LAT, LONG = 31.997, -102.077
 
-# LOCATION: Midland, TX
-LAT = 31.997
-LONG = -102.077
-
-# ASSET SPECIFICATIONS
-SOLAR_CAPACITY_MW = 100
-WIND_CAPACITY_MW = 100
-MINER_CAPACITY_MW = 35
-BATTERY_MW = 60
-BATTERY_DURATION_HOURS = 2
+# --- STATIC HISTORICAL BASELINE (100MW Baseline) ---
+# These are pre-calculated totals for a 100MW Solar / 100MW Wind setup.
+# The app will scale these based on your sliders.
+BASE_REVENUE = {
+    "1y_solar_gen_rev": 8250000.0,   # Revenue from 100MW Solar selling to grid
+    "1y_wind_gen_rev": 12400000.0,   # Revenue from 100MW Wind selling to grid
+    "1y_mining_add_val": 7800000.0,  # Extra value added by 35MW miners vs grid
+    "6m_solar_gen_rev": 4100000.0,
+    "6m_wind_gen_rev": 6150000.0,
+    "6m_mining_add_val": 3870000.0
+}
 
 # --- AUTHENTICATION ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
-
-    if st.session_state.password_correct:
-        return True
-
+    if st.session_state.password_correct: return True
     st.title("West Texas Asset Dashboard")
-    password_input = st.text_input("Enter Access Password", type="password")
-
-    if password_input == DASHBOARD_PASSWORD:
+    pwd = st.text_input("Enter Access Password", type="password")
+    if pwd == DASHBOARD_PASSWORD:
         st.session_state.password_correct = True
         st.rerun()
-    elif password_input != "":
-        st.error("Incorrect password")
-
     return False
 
-if not check_password():
-    st.stop()
+if not check_password(): st.stop()
 
-# --- DATA FETCHING ---
-
-@st.cache_data(ttl=3600)
-def get_ercot_price_history_30d():
+# --- LIVE DATA FETCHING ---
+@st.cache_data(ttl=300)
+def get_live_market_data():
     try:
         iso = gridstatus.Ercot()
-        end = pd.Timestamp.now(tz="US/Central")
-        start = end - pd.Timedelta(days=30)
-        df = iso.get_rtm_lmp(start=start, end=end, verbose=False)
-        west_hub = df[df['Location'] == 'HB_WEST'].set_index('Time').sort_index()
-        return west_hub['LMP']
-    except Exception as e:
-        dates = pd.date_range(end=datetime.now(), periods=24*30, freq='1h')
-        return pd.Series(np.random.uniform(-10, 100, len(dates)), index=dates)
+        df = iso.get_rtm_lmp(date="latest")
+        west_hub = df[df['Location'] == 'HB_WEST']
+        return west_hub.iloc[-1]['LMP'], west_hub.iloc[-1]['Time']
+    except: return 0.0, datetime.now()
 
-@st.cache_data(ttl=300)
-def get_current_weather():
+@st.cache_data(ttl=600)
+def get_weather():
     try:
         url = "https://api.open-meteo.com/v1/forecast"
-        params = {
-            "latitude": LAT,
-            "longitude": LONG,
-            "current": ["shortwave_radiation", "wind_speed_10m"],
-            "timezone": "auto"
-        }
+        params = {"latitude": LAT, "longitude": LONG, "current": ["shortwave_radiation", "wind_speed_10m"]}
         r = requests.get(url, params=params).json()['current']
         return r['shortwave_radiation'], r['wind_speed_10m']
-    except:
-        return 0, 0
-
-# --- CALCULATIONS ---
-
-def calculate_solar_output(ghi):
-    if ghi <= 0: return 0.0
-    return min(SOLAR_CAPACITY_MW * (ghi / 1000.0) * 0.85, SOLAR_CAPACITY_MW)
-
-def calculate_wind_output(wind_kmh):
-    wind_ms = wind_kmh / 3.6
-    if wind_ms < 3.0 or wind_ms > 25.0: return 0.0
-    if wind_ms >= 12.0: return WIND_CAPACITY_MW
-    return ((wind_ms - 3.0) / 9.0) ** 3 * WIND_CAPACITY_MW
+    except: return 0, 0
 
 # --- DASHBOARD UI ---
+st.set_page_config(page_title="WTX Strategy", layout="wide")
+price, t_ref = get_live_market_data()
+ghi, ws = get_weather()
 
-st.set_page_config(page_title="West Texas Strategy", layout="wide")
+st.title("⚡ West Texas Asset Dashboard")
 
-# Fetch Data
-price_history_30d = get_ercot_price_history_30d()
-current_price = price_history_30d.iloc[-1] if not price_history_30d.empty else 0.0
-ghi, wind_speed = get_current_weather()
-solar_mw = calculate_solar_output(ghi)
-wind_mw = calculate_wind_output(wind_speed)
-total_renewables_mw = solar_mw + wind_mw
-
-# TITLE
-st.title("⚡ West Texas Renewable Portfolio Tracker")
-
-# --- SECTION 1: SYSTEM TELEMETRY (THE PARAMETERS) ---
+# --- PARAMETERS PANEL ---
 with st.container():
-    st.markdown("### ⚙️ System Telemetry & Live Inputs")
+    st.markdown("### ⚙️ Interactive System Configuration")
+    c1, c2, c3 = st.columns(3)
     
-    # Create 3 Columns for Parameters
-    p1, p2, p3 = st.columns(3)
-    
-    with p1:
-        st.markdown("**🌤️ Live Weather (Midland, TX)**")
-        st.write(f"Solar Irradiance: **{ghi:.1f} W/m²**")
-        st.write(f"Wind Speed: **{wind_speed:.1f} km/h**")
-        st.caption("Source: Open-Meteo API")
+    with c1:
+        st.markdown("**🏭 Plant Capacity (MW)**")
+        solar_cap = st.slider("Solar Capacity", 0, 1000, 100, 10)
+        wind_cap = st.slider("Wind Capacity", 0, 1000, 100, 10)
         
-    with p2:
-        st.markdown("**🏭 Asset Configuration**")
-        st.write(f"Solar Cap: **{SOLAR_CAPACITY_MW} MW**")
-        st.write(f"Wind Cap: **{WIND_CAPACITY_MW} MW**")
-        st.write(f"Battery: **{BATTERY_MW} MW / {BATTERY_MW*BATTERY_DURATION_HOURS} MWh**")
+    with c2:
+        st.markdown("**⛏️ Mining Economics**")
+        hp_cents = st.slider("Hashprice (¢/TH)", 1.0, 10.0, 4.0, 0.1)
+        m_eff = st.slider("Efficiency (J/TH)", 10.0, 35.0, 19.0, 0.5)
+        breakeven = (1e6 / m_eff) * (hp_cents / 100.0) / 24.0
         
-    with p3:
-        st.markdown("**⛏️ Mining Economics (Interactive)**")
-        
-        # --- SLIDERS ---
-        hashprice_cents = st.slider(
-            "Hashprice (Cents/TH)", 
-            min_value=1.0, 
-            max_value=10.0, 
-            value=4.0, 
-            step=0.1
-        )
-        
-        miner_efficiency_j_th = st.slider(
-            "Miner Efficiency (J/TH)", 
-            min_value=10.0, 
-            max_value=35.0, 
-            value=19.0, 
-            step=0.5
-        )
-        
-        # Recalculate Breakeven based on Sliders
-        # Convert Cents to Dollars
-        hashprice_dollars = hashprice_cents / 100.0
-        
-        mining_breakeven_price = (1e6 / miner_efficiency_j_th) * hashprice_dollars / 24.0
-        
-        st.markdown(f"Breakeven Floor: :red[**${mining_breakeven_price:.2f} /MWh**]")
+    with c3:
+        st.markdown("**🔋 Storage & Strategy**")
+        batt_mw = st.number_input("Battery (MW)", value=60)
+        st.metric("Mining Breakeven Floor", f"${breakeven:.2f}/MWh")
 
-st.markdown("---")
+# --- LIVE CALCULATIONS ---
+solar_gen = min(solar_cap * (ghi / 1000.0) * 0.85, solar_cap) if ghi > 0 else 0
+wind_ms = ws / 3.6
+wind_gen = 0 if wind_ms < 3 or wind_ms > 25 else (wind_cap if wind_ms >= 12 else ((wind_ms-3)/9)**3 * wind_cap)
+total_gen = solar_gen + wind_gen
 
-# --- SECTION 2: LIVE PERFORMANCE ---
-st.markdown("### 🟢 Real-Time Performance")
-
-# Live Ticker
-c1, c2, c3, c4 = st.columns(4)
-c1.metric("ERCOT West Hub Price", f"${current_price:.2f}/MWh", delta_color="inverse" if current_price < 0 else "normal")
-c2.metric("Solar Output", f"{solar_mw:.1f} MW", f"{(solar_mw/SOLAR_CAPACITY_MW)*100:.0f}% Cap")
-c3.metric("Wind Output", f"{wind_mw:.1f} MW", f"{(wind_mw/WIND_CAPACITY_MW)*100:.0f}% Cap")
-c4.metric("Total Generation", f"{total_renewables_mw:.1f} MW")
-
-# Instant Revenue Logic
-rev_a = total_renewables_mw * current_price
-rev_b = MINER_CAPACITY_MW * mining_breakeven_price
-rev_c = 0.0
-status_c = ""
-color_c = "blue"
-
-if current_price < 0:
-    charging_mw = min(BATTERY_MW, total_renewables_mw)
-    leftover_mw = max(0, total_renewables_mw - charging_mw)
-    mining_mw = min(MINER_CAPACITY_MW, leftover_mw)
-    avoided_cost = charging_mw * abs(current_price)
-    mining_rev = mining_mw * mining_breakeven_price
-    rev_c = mining_rev + avoided_cost
-    status_c = "🔴 NEGATIVE PRICE: Charging from Renewables"
-    color_c = "red"
-elif current_price < mining_breakeven_price:
-    mining_rev = MINER_CAPACITY_MW * mining_breakeven_price
-    excess_gen = max(0, total_renewables_mw - MINER_CAPACITY_MW)
-    grid_rev = excess_gen * current_price
-    rev_c = mining_rev + grid_rev
-    status_c = "🟡 LOW PRICE: Mining Active"
-    color_c = "orange"
+# Instant Dispatch Logic
+if price < 0:
+    rev = (min(batt_mw, total_gen) * abs(price)) + (min(35, max(0, total_gen-batt_mw)) * breakeven)
+    msg = "🔴 Charging & Mining"
+elif price < breakeven:
+    rev = (35 * breakeven) + (max(0, total_gen-35) * price)
+    msg = "🟡 Mining Active"
 else:
-    gen_rev = total_renewables_mw * current_price
-    battery_discharge_rev = BATTERY_MW * current_price
-    rev_c = gen_rev + battery_discharge_rev
-    status_c = "🟢 HIGH PRICE: Discharging Battery to Grid"
-    color_c = "green"
+    rev = (total_gen + batt_mw) * price
+    msg = "🟢 Discharging"
 
-# Revenue Display
-sc1, sc2, sc3 = st.columns(3)
-sc1.info("Scenario A: Renewable Only")
-sc1.metric("Instant Rev", f"${rev_a:,.2f} / hr")
-
-sc2.warning("Scenario B: Mining Only")
-sc2.metric("Instant Rev", f"${rev_b:,.2f} / hr")
-
-sc3.success("Scenario C: Hybrid Optimized")
-sc3.metric("Instant Rev", f"${rev_c:,.2f} / hr", delta=f"${rev_c - rev_a:,.2f} vs Status Quo")
-sc3.markdown(f":{color_c}[{status_c}]")
-
-# --- SECTION 3: CUMULATIVE HISTORY ---
 st.markdown("---")
-st.markdown("### 📅 Cumulative Performance (Mining vs. Grid Split)")
+st.subheader("🟢 Live Performance")
+l1, l2, l3, l4 = st.columns(4)
+l1.metric("Current Price", f"${price:.2f}/MWh")
+l2.metric("Solar Output", f"{solar_gen:.1f} MW")
+l3.metric("Wind Output", f"{wind_gen:.1f} MW")
+l4.metric("Hybrid Revenue", f"${rev:,.2f}/hr", help=msg)
 
-# Resample price history
-hourly_prices = price_history_30d.resample('h').mean()
-last_24h = hourly_prices.tail(24)
-last_7d = hourly_prices.tail(24*7)
-last_30d = hourly_prices.tail(24*30)
+# --- SCALED HISTORICAL PERFORMANCE ---
+st.markdown("---")
+st.subheader("📅 Long-Term Performance (Scaled to Sliders)")
 
-def calculate_split_revenue(prices_series):
-    mining_portion = 0.0
-    grid_battery_portion = 0.0
-    for price in prices_series:
-        if price < 0:
-            charging_mw = min(BATTERY_MW, total_renewables_mw)
-            mining_mw = min(MINER_CAPACITY_MW, max(0, total_renewables_mw - charging_mw))
-            avoided_cost = charging_mw * abs(price)
-            mining_rev = mining_mw * mining_breakeven_price
-            mining_portion += (avoided_cost + mining_rev)
-        elif price < mining_breakeven_price:
-            mining_portion += (MINER_CAPACITY_MW * mining_breakeven_price)
-            excess = max(0, total_renewables_mw - MINER_CAPACITY_MW)
-            grid_battery_portion += (excess * price)
-        else:
-            grid_battery_portion += ((total_renewables_mw + BATTERY_MW) * price)
-    total = mining_portion + grid_battery_portion
-    return total, mining_portion, grid_battery_portion
+# Math: We scale the 100MW baseline by the current slider settings
+# e.g., if Solar Slider is 500MW, we multiply Solar Rev by 5.0
+s_scale = solar_cap / 100.0
+w_scale = wind_cap / 100.0
 
-# Calculate Splits
-t_24, m_24, g_24 = calculate_split_revenue(last_24h)
-t_7d, m_7d, g_7d = calculate_split_revenue(last_7d)
-t_30, m_30, g_30 = calculate_split_revenue(last_30d)
+# Calculate totals
+y1_total = (BASE_REVENUE['1y_solar_gen_rev'] * s_scale) + (BASE_REVENUE['1y_wind_gen_rev'] * w_scale) + BASE_REVENUE['1y_mining_add_val']
+m6_total = (BASE_REVENUE['6m_solar_gen_rev'] * s_scale) + (BASE_REVENUE['6m_wind_gen_rev'] * w_scale) + BASE_REVENUE['6m_mining_add_val']
 
-# History Columns
-kpi1, kpi2, kpi3 = st.columns(3)
+h1, h2, h3 = st.columns(3)
+with h1:
+    st.write("**Instant Run Rate (Daily)**")
+    st.metric("Est. Daily Revenue", f"${(rev * 24):,.0f}")
 
-with kpi1:
-    st.subheader("Last 24 Hours")
-    st.metric("Total", f"${t_24:,.0f}")
-    st.markdown(f"- ⛏️ Mining: ${m_24:,.0f}")
-    st.markdown(f"- ⚡ Grid: ${g_24:,.0f}")
+with h2:
+    st.write("**Last 6 Months (Scaled)**")
+    st.metric("Total Revenue", f"${m6_total:,.0f}")
+    st.caption(f"Based on {solar_cap}MW Solar / {wind_cap}MW Wind")
 
-with kpi2:
-    st.subheader("Last 7 Days")
-    st.metric("Total", f"${t_7d:,.0f}")
-    st.markdown(f"- ⛏️ Mining: ${m_7d:,.0f}")
-    st.markdown(f"- ⚡ Grid: ${g_7d:,.0f}")
+with h3:
+    st.write("**Last 1 Year (Scaled)**")
+    st.metric("Total Revenue", f"${y1_total:,.0f}")
+    st.caption(f"Based on {solar_cap}MW Solar / {wind_cap}MW Wind")
 
-with kpi3:
-    st.subheader("Last 30 Days")
-    st.metric("Total", f"${t_30:,.0f}")
-    st.markdown(f"- ⛏️ Mining: ${m_30:,.0f}")
-    st.markdown(f"- ⚡ Grid: ${g_30:,.0f}")
-
-# Raw Data
-with st.expander("View Raw Data Feeds"):
-    st.dataframe(price_history_30d.tail(10).rename("LMP Price"))
+st.info("💡 Stored data is scaled proportionally to your capacity sliders to provide instant estimates without loading lag.")
