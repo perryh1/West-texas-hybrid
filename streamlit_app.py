@@ -45,16 +45,17 @@ if not check_password(): st.stop()
 # --- SMART REGIONAL DATA ENGINE ---
 @st.cache_data(ttl=300)
 def get_regional_data(city, state):
-    # Mapping logic for major hubs
+    # Mapping logic for major hubs with corrected gridstatus class names
+    # Note: PJM, MISO, and CAISO must be all caps
     registry = {
         "TX": {"iso": gridstatus.Ercot(), "hub": "HB_WEST", "lat": 31.997, "lon": -102.077, "tz": "US/Central", "acc": 98},
-        "PA": {"iso": gridstatus.Pjm(), "hub": "PJM WH", "lat": 40.000, "lon": -76.000, "tz": "US/Eastern", "acc": 85},
-        "IL": {"iso": gridstatus.Miso(), "hub": "ILLINOIS.HUB", "lat": 40.000, "lon": -89.000, "tz": "US/Central", "acc": 82},
-        "CA": {"iso": gridstatus.Caiso(), "hub": "TH_NP15_GEN-APND", "lat": 37.000, "lon": -120.000, "tz": "US/Pacific", "acc": 78}
+        "PA": {"iso": gridstatus.PJM(), "hub": "PJM WH", "lat": 40.000, "lon": -76.000, "tz": "US/Eastern", "acc": 85},
+        "IL": {"iso": gridstatus.MISO(), "hub": "ILLINOIS.HUB", "lat": 40.000, "lon": -89.000, "tz": "US/Central", "acc": 82},
+        "CA": {"iso": gridstatus.CAISO(), "hub": "TH_NP15_GEN-APND", "lat": 37.000, "lon": -120.000, "tz": "US/Pacific", "acc": 78}
     }
     
     st_code = state.upper().strip()
-    config = registry.get(st_code, registry["TX"]) # Default to TX if not found
+    config = registry.get(st_code, registry["TX"]) 
     
     try:
         # 1. Weather
@@ -67,8 +68,8 @@ def get_regional_data(city, state):
         price = df_p[df_p['Location'] == config['hub']].iloc[-1]['LMP']
         
         return price, w_r, config['hub'], config['acc']
-    except:
-        return 24.50, None, "FALLBACK", 50
+    except Exception as e:
+        return 24.50, None, f"Fallback (Error: {str(e)})", 50
 
 # --- UI SETUP ---
 st.set_page_config(page_title="Asset Strategy Dashboard", layout="wide")
@@ -77,10 +78,19 @@ with st.sidebar:
     st.header("📍 Site Location")
     u_city = st.text_input("City", value="Midland")
     u_state = st.text_input("State (e.g. TX, PA, IL, CA)", value="TX")
+    
+    st.markdown("---")
+    st.header("🛠️ Dashboard Tools")
     if st.button("Reset to Default Config"):
         for key in st.session_state.keys():
             if key != "password_correct": del st.session_state[key]
         st.rerun()
+    
+    # DATA HEALTH INDICATOR
+    if w_data and price:
+        st.sidebar.success("🟢 Data Feeds: Healthy")
+    else:
+        st.sidebar.error("🔴 Data Feeds: Error")
 
 price, w_data, hub_node, acc_score = get_regional_data(u_city, u_state)
 
@@ -105,6 +115,7 @@ with c3:
     hp_cents = st.slider("Hashprice (¢/TH)", 1.0, 10.0, 4.0, 0.1)
     m_eff = st.slider("Efficiency (J/TH)", 10.0, 35.0, 19.0, 0.5)
     breakeven = (1e6 / m_eff) * (hp_cents / 100.0) / 24.0
+    st.metric("Breakeven Floor", f"${breakeven:.2f}/MWh")
 
 # --- SECTION 3: ROI & OPTIMIZATION ---
 st.markdown("---")
@@ -119,7 +130,7 @@ curr_v = (BASE_REVENUE['1y_mining_per_mw'] * miner_mw) + (BASE_REVENUE['1y_batt_
 ideal_v = (BASE_REVENUE['1y_mining_per_mw'] * ideal_m) + (BASE_REVENUE['1y_batt_per_mw'] * ideal_b)
 r3.metric("Annual Optimization Delta", f"${(ideal_v - curr_v):,.0f}", delta=f"{((ideal_v-curr_v)/curr_v)*100:.1f}% Upside")
 
-# --- SECTION 4: LIVE POWER & ALPHA ---
+# --- SECTION 4: LIVE PERFORMANCE ---
 st.markdown("---")
 ghi = w_data['current']['shortwave_radiation'] if w_data else 0
 ws = w_data['current']['wind_speed_10m'] if w_data else 0
