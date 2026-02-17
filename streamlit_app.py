@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 DASHBOARD_PASSWORD = "123"
+LAT, LONG = 31.997, -102.077
 
 # --- STATIC HISTORICAL BASELINE (Per 100MW Unit) ---
 BASE_REVENUE = {
@@ -17,20 +18,27 @@ BASE_REVENUE = {
     "6m_mining_per_mw": 111428.0, "6m_batt_per_mw": 22500.0
 }
 
+# --- INITIALIZE VARIABLES TO PREVENT NAMEERROR ---
+price = 0.0
+w_data = None
+hub_node = "Unknown"
+acc_score = 0
+
 # --- AUTHENTICATION & SUMMARY ---
 def check_password():
     if "password_correct" not in st.session_state:
         st.session_state.password_correct = False
     if st.session_state.password_correct: return True
+    
     st.title("⚡ Multi-Grid Asset Strategy Dashboard")
     with st.expander("📖 System Overview & Data Sources", expanded=True):
         st.markdown("""
         ### **How it Works**
+        This engine optimizes power flow between the **Grid**, **Miners**, and **Battery**. 
         Input your site's **City and State** to link live weather and grid pricing. 
-        The engine optimizes power flow between the **Grid**, **Miners**, and **Battery**.
         
         ### **Data Sources & Frequency**
-        * **Weather:** High-resolution models via **Open-Meteo API**.
+        * **Weather:** Open-Meteo API (High-Res Midland/Regional models).
         * **Market Pricing:** Real-time 5-15 min nodal/hub prices via **gridstatus**.
         * **🔄 Refresh Rate:** Polled every **5 minutes**.
         """)
@@ -45,29 +53,22 @@ if not check_password(): st.stop()
 # --- SMART REGIONAL DATA ENGINE ---
 @st.cache_data(ttl=300)
 def get_regional_data(city, state):
-    # Mapping logic for major hubs with corrected gridstatus class names
-    # Note: PJM, MISO, and CAISO must be all caps
+    # Mapping for major hubs with corrected gridstatus class names (All Caps)
     registry = {
         "TX": {"iso": gridstatus.Ercot(), "hub": "HB_WEST", "lat": 31.997, "lon": -102.077, "tz": "US/Central", "acc": 98},
         "PA": {"iso": gridstatus.PJM(), "hub": "PJM WH", "lat": 40.000, "lon": -76.000, "tz": "US/Eastern", "acc": 85},
         "IL": {"iso": gridstatus.MISO(), "hub": "ILLINOIS.HUB", "lat": 40.000, "lon": -89.000, "tz": "US/Central", "acc": 82},
         "CA": {"iso": gridstatus.CAISO(), "hub": "TH_NP15_GEN-APND", "lat": 37.000, "lon": -120.000, "tz": "US/Pacific", "acc": 78}
     }
-    
     st_code = state.upper().strip()
     config = registry.get(st_code, registry["TX"]) 
-    
     try:
-        # 1. Weather
         w_url = "https://api.open-meteo.com/v1/forecast"
         w_params = {"latitude": config['lat'], "longitude": config['lon'], "current": ["shortwave_radiation", "wind_speed_10m"], "hourly": ["shortwave_radiation", "wind_speed_10m"], "timezone": config['tz']}
         w_r = requests.get(w_url, params=w_params).json()
-        
-        # 2. Price
         df_p = config['iso'].get_rtm_lmp(date="latest")
-        price = df_p[df_p['Location'] == config['hub']].iloc[-1]['LMP']
-        
-        return price, w_r, config['hub'], config['acc']
+        price_val = df_p[df_p['Location'] == config['hub']].iloc[-1]['LMP']
+        return price_val, w_r, config['hub'], config['acc']
     except Exception as e:
         return 24.50, None, f"Fallback (Error: {str(e)})", 50
 
@@ -77,28 +78,23 @@ st.set_page_config(page_title="Asset Strategy Dashboard", layout="wide")
 with st.sidebar:
     st.header("📍 Site Location")
     u_city = st.text_input("City", value="Midland")
-    u_state = st.text_input("State (e.g. TX, PA, IL, CA)", value="TX")
-    
-    st.markdown("---")
-    st.header("🛠️ Dashboard Tools")
+    u_state = st.text_input("State (TX, PA, IL, CA)", value="TX")
     if st.button("Reset to Default Config"):
         for key in st.session_state.keys():
             if key != "password_correct": del st.session_state[key]
         st.rerun()
-    
-    # DATA HEALTH INDICATOR
-    if w_data and price:
-        st.sidebar.success("🟢 Data Feeds: Healthy")
-    else:
-        st.sidebar.error("🔴 Data Feeds: Error")
 
 price, w_data, hub_node, acc_score = get_regional_data(u_city, u_state)
 
 # --- SECTION 1: NODAL INTEL ---
 st.subheader(f"🛰️ Grid Intelligence: {u_city}, {u_state}")
-ac1, ac2 = st.columns(2)
-ac1.metric("Selected Pricing Hub", hub_node)
-ac2.metric("Mapping Accuracy", f"{acc_score}%", help="Accuracy of the selected hub relative to the city center.")
+ac1, ac2, ac3 = st.columns(3)
+ac1.metric("Selected Hub", hub_node)
+ac2.metric("Mapping Accuracy", f"{acc_score}%")
+if w_data and price:
+    ac3.success("🟢 Data Feeds: Healthy")
+else:
+    ac3.error("🔴 Data Feeds: Fallback Mode")
 
 # --- SECTION 2: CONFIG ---
 st.markdown("---")
@@ -121,14 +117,14 @@ with c3:
 st.markdown("---")
 t_capex = ((miner_mw * 1000000) / m_eff) * m_cost
 ann_alpha = BASE_REVENUE['1y_mining_per_mw'] * miner_mw * 0.4
-r1, r2, r3 = st.columns(3)
-r1.metric("Total Miner Capex", f"${t_capex:,.0f}")
-r2.metric("Est. IRR", f"{(ann_alpha/t_capex)*100 if t_capex>0 else 0:.1f}%")
-
 ideal_m, ideal_b = int((solar_cap + wind_cap) * 0.2), int((solar_cap + wind_cap) * 0.3)
 curr_v = (BASE_REVENUE['1y_mining_per_mw'] * miner_mw) + (BASE_REVENUE['1y_batt_per_mw'] * batt_mw)
 ideal_v = (BASE_REVENUE['1y_mining_per_mw'] * ideal_m) + (BASE_REVENUE['1y_batt_per_mw'] * ideal_b)
-r3.metric("Annual Optimization Delta", f"${(ideal_v - curr_v):,.0f}", delta=f"{((ideal_v-curr_v)/curr_v)*100:.1f}% Upside")
+
+r1, r2, r3 = st.columns(3)
+r1.metric("Total Miner Capex", f"${t_capex:,.0f}")
+r2.metric("Est. IRR", f"{(ann_alpha/t_capex)*100 if t_capex>0 else 0:.1f}%")
+r3.metric("Annual Opt. Delta", f"${(ideal_v - curr_v):,.0f}", delta=f"{((ideal_v-curr_v)/curr_v)*100:.1f}% Upside")
 
 # --- SECTION 4: LIVE PERFORMANCE ---
 st.markdown("---")
