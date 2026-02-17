@@ -7,7 +7,7 @@ import gridstatus
 from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
-DASHBOARD_PASSWORD = "Hardin2026"
+DASHBOARD_PASSWORD = "123"
 LAT, LONG = 31.997, -102.077
 
 # --- STATIC HISTORICAL BASELINE (Per 100MW Unit) ---
