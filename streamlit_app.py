@@ -92,7 +92,7 @@ def get_live_and_history():
     try:
         iso = gridstatus.Ercot()
         end = pd.Timestamp.now(tz="US/Central")
-        start = end - pd.Timedelta(days=7)
+        start = end - pd.Timedelta(days=31) # Extended to 31 days
         df_price = iso.get_rtm_lmp(start=start, end=end, verbose=False)
         price_hist = df_price[df_price['Location'] == 'HB_WEST'].set_index('Time').sort_index()['LMP']
         url = "https://api.open-meteo.com/v1/forecast"
@@ -103,7 +103,7 @@ def get_live_and_history():
         if ghi <= 1.0 and 8 <= curr_h <= 17: ghi = r['hourly']['shortwave_radiation'][curr_h]
         if ws <= 1.0: ws = r['hourly']['wind_speed_10m'][curr_h]
         return price_hist, ghi, ws
-    except: return pd.Series(np.random.uniform(15, 45, 168)), 795.0, 22.0
+    except: return pd.Series(np.random.uniform(15, 45, 744)), 795.0, 22.0 # 744 hrs in 31 days
 
 price_hist, ghi, ws = get_live_and_history()
 current_price = price_hist.iloc[-1]
@@ -180,7 +180,7 @@ else:
 
 st.subheader("📊 Live Power & Performance")
 p_grid, p1, p2, p3, p4 = st.columns(5)
-p_grid.metric("Current Grid Price", f"${current_price:.2f}/MWh") # Added this for you
+p_grid.metric("Current Grid Price", f"${current_price:.2f}/MWh")
 p1.metric("Total Generation", f"{total_gen:.1f} MW")
 p2.metric("Miner Load", f"{m_load:.1f} MW")
 p3.metric("Mining Alpha", f"${m_alpha:,.2f}/hr")
@@ -202,6 +202,7 @@ def calc_alpha(p_series, m_mw, b_mw, gen_mw):
 
 ma24, ba24, g24 = calc_alpha(price_hist.tail(24), miner_mw, batt_mw, total_gen)
 ma7, ba7, g7 = calc_alpha(price_hist.tail(168), miner_mw, batt_mw, total_gen)
+ma30, ba30, g30 = calc_alpha(price_hist.tail(720), miner_mw, batt_mw, total_gen) # 30 Days logic
 
 def display_box(label, ma, ba, base):
     st.write(f"**{label}**")
@@ -210,8 +211,9 @@ def display_box(label, ma, ba, base):
     st.markdown(f"- ⛏️ **Mining Alpha:** `${ma:,.0f}`")
     st.markdown(f"- 🔋 **Battery Alpha:** `${ba:,.0f}`")
 
-h1, h2, h3, h4 = st.columns(4)
+h1, h2, h3, h4, h5 = st.columns(5) # Shifted to 5 columns
 with h1: display_box("Last 24 Hours", ma24, ba24, g24)
 with h2: display_box("Last 7 Days", ma7, ba7, g7)
-with h3: display_box("Last 6 Months", BASE_REVENUE['6m_mining_per_mw']*miner_mw*0.4, BASE_REVENUE['6m_batt_per_mw']*batt_mw, (BASE_REVENUE['6m_grid_solar']+BASE_REVENUE['6m_grid_wind'])*(solar_cap/100))
-with h4: display_box("Last 1 Year", ann_alpha, BASE_REVENUE['1y_batt_per_mw']*batt_mw, (BASE_REVENUE['1y_grid_solar']+BASE_REVENUE['1y_grid_wind'])*(solar_cap/100))
+with h3: display_box("Last 30 Days", ma30, ba30, g30)
+with h4: display_box("Last 6 Months", BASE_REVENUE['6m_mining_per_mw']*miner_mw*0.4, BASE_REVENUE['6m_batt_per_mw']*batt_mw, (BASE_REVENUE['6m_grid_solar']+BASE_REVENUE['6m_grid_wind'])*(solar_cap/100))
+with h5: display_box("Last 1 Year", ann_alpha, BASE_REVENUE['1y_batt_per_mw']*batt_mw, (BASE_REVENUE['1y_grid_solar']+BASE_REVENUE['1y_grid_wind'])*(solar_cap/100))
