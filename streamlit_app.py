@@ -28,7 +28,6 @@ def check_password():
         st.session_state.password_correct = False
     if st.session_state.password_correct: return True
     
-    # EXECUTIVE SUMMARY LOGIN PAGE
     st.title("⚡ The Hybrid Alpha Play")
     st.subheader("Scaling Renewable Asset Yield")
     
@@ -101,7 +100,6 @@ def get_live_and_history():
         r = requests.get(url, params=params).json()
         ghi, ws = r['current']['shortwave_radiation'], r['current']['wind_speed_10m']
         curr_h = datetime.now().hour
-        # Robust Logic for Night/Forecast Fallback
         if ghi <= 1.0 and 8 <= curr_h <= 17: ghi = r['hourly']['shortwave_radiation'][curr_h]
         if ws <= 1.0: ws = r['hourly']['wind_speed_10m'][curr_h]
         return price_hist, ghi, ws
@@ -172,6 +170,7 @@ st.markdown("---")
 s_gen = min(solar_cap * (ghi / 1000.0) * 0.85, solar_cap) if ghi > 0 else 0
 w_gen = 0 if (ws/3.6) < 3 else (wind_cap if (ws/3.6) >= 12 else (((ws/3.6)-3)/9)**3 * wind_cap)
 total_gen = s_gen + w_gen
+
 if current_price < breakeven:
     m_load, g_export = min(miner_mw, total_gen), max(0, total_gen - miner_mw)
     m_alpha, b_alpha = m_load * (breakeven - max(0, current_price)), 0
@@ -180,7 +179,8 @@ else:
     m_alpha, b_alpha = 0, batt_mw * current_price
 
 st.subheader("📊 Live Power & Performance")
-p1, p2, p3, p4 = st.columns(4)
+p_grid, p1, p2, p3, p4 = st.columns(5)
+p_grid.metric("Current Grid Price", f"${current_price:.2f}/MWh") # Added this for you
 p1.metric("Total Generation", f"{total_gen:.1f} MW")
 p2.metric("Miner Load", f"{m_load:.1f} MW")
 p3.metric("Mining Alpha", f"${m_alpha:,.2f}/hr")
