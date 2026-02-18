@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 
 # --- CONFIGURATION ---
 DASHBOARD_PASSWORD = "123"
+MIDLAND_LAT, MIDLAND_LON = 31.997, -102.077
 
 # --- STATIC HISTORICAL BASELINE (Per 100MW Unit) ---
 BASE_REVENUE = {
@@ -20,8 +21,6 @@ BASE_REVENUE = {
 # --- INITIALIZE VARIABLES ---
 price = 0.0
 w_data = None
-hub_node = "Unknown"
-acc_score = 0
 
 # --- AUTHENTICATION & EXECUTIVE SUMMARY ---
 def check_password():
@@ -29,17 +28,15 @@ def check_password():
         st.session_state.password_correct = False
     if st.session_state.password_correct: return True
     
-    # Header Section
     st.title("⚡ The Hybrid Alpha Play")
-    st.subheader("Scaling Renewable Asset Yield")
+    st.subheader("Midland, Texas Asset Optimization")
     
     st.markdown("""
     Most renewable projects operate as passive infrastructure—connecting to the grid and accepting whatever the market dictates. 
-    This application serves as the **economic brain** that transforms a standard wind or solar site into a high-frequency trading desk. 
+    This application serves as the **economic brain** that transforms the Midland site into a high-frequency trading desk. 
     The strategy focuses on **arbitraging grid volatility** to ensure no megawatt is ever wasted.
     """)
 
-    # Secret Sauce Section
     st.markdown("---")
     st.header("🍯 The 'Secret Sauce': The 123 on Hybrid Alpha")
     st.info("**Core Value:** It’s the Dynamic Logic. The system creates a pivot that treats Bitcoin miners and batteries as a 'virtual load' that reacts to market conditions in milliseconds.")
@@ -51,7 +48,7 @@ def check_password():
         Integrates direct operational learnings from Helios, where hybrid energy theory was stress-tested against real-world mechanical and electrical constraints.
         
         **📊 5-Year High-Fidelity Training**
-        Trained on five years of 5-minute interval grid pricing data, weather patterns, and thermal variables to recognize market 'fingerprints'.
+        Trained on five years of 5-minute interval grid pricing data specific to West Texas to recognize market 'fingerprints'.
         
         **❄️ Uri-Proof Backtesting**
         Proven during events like Winter Storm Uri; protected assets from negative pricing while capturing high-value spikes by predicting load shifts.
@@ -60,27 +57,23 @@ def check_password():
     with col2:
         st.markdown("""
         **🧠 Predictive AI Battery Management**
-        Maintains charge levels by analyzing ambient temp, generation trends, and grid variables to ensure 'dry powder' for massive price spikes.
+        Maintains charge levels by analyzing Midland ambient temp, generation trends, and grid variables to ensure 'dry powder' for massive price spikes.
         
         **⚡ Real-Time Breakeven Reactivity**
         Breakeven floor recalibrates instantly as Hashprice or Efficiency shifts. The asset trades against current reality, not yesterday's spreadsheets.
         
         **⏱️ The Interconnect Stop-Gap**
-        For BTM sites in the queue, this setup powers miners today—turning a 'waiting game' for agreements into a 'revenue game'.
+        For the Midland BTM site, this setup powers miners today—turning a 'waiting game' for agreements into a 'revenue game'.
         """)
 
-    # Alpha Layer Section
     st.markdown("---")
     st.header("⚙️ How the Alpha Layer Operates")
-    st.write("Evaluating in real-time: *'Is a Megawatt worth more as a grid credit or as Bitcoin?'*")
-    
     a1, a2, a3 = st.columns(3)
-    a1.metric("Live Telemetry", "5 Min Poll", help="Market pulse (ERCOT/PJM) and local weather.")
-    a2.metric("Hybrid Alpha", "Cash Gain", help="Specific gain a standard company would leave on the table.")
-    a3.metric("ROI on Autopilot", "Real-Time IRR", help="Aggressive, data-backed scaling as the market shifts.")
+    a1.metric("Live Telemetry", "5 Min Poll")
+    a2.metric("Hybrid Alpha", "Cash Gain")
+    a3.metric("ROI on Autopilot", "Real-Time IRR")
 
-    # Bottom Line
-    st.success("**The Bottom Line:** This is mining market inefficiency. The tool ensures every photon and every gust of wind is converted into the highest possible value—protecting the downside and capturing the upside in a reactive, real-time environment.")
+    st.success("**The Bottom Line:** This is mining market inefficiency. The tool ensures every photon and every gust of wind in West Texas is converted into the highest possible value.")
     
     st.markdown("---")
     pwd = st.text_input("Unlock Dashboard", type="password")
@@ -91,50 +84,37 @@ def check_password():
 
 if not check_password(): st.stop()
 
-# --- DATA ENGINE ---
+# --- MIDLAND DATA ENGINE ---
 @st.cache_data(ttl=300)
-def get_regional_data(city, state):
-    registry = {
-        "TX": {"iso": gridstatus.Ercot(), "hub": "HB_WEST", "lat": 31.997, "lon": -102.077, "tz": "US/Central", "acc": 98},
-        "PA": {"iso": gridstatus.PJM(), "hub": "PJM WH", "lat": 40.000, "lon": -76.000, "tz": "US/Eastern", "acc": 85},
-        "IL": {"iso": gridstatus.MISO(), "hub": "ILLINOIS.HUB", "lat": 40.000, "lon": -89.000, "tz": "US/Central", "acc": 82},
-        "CA": {"iso": gridstatus.CAISO(), "hub": "TH_NP15_GEN-APND", "lat": 37.000, "lon": -120.000, "tz": "US/Pacific", "acc": 78}
-    }
-    st_code = state.upper().strip()
-    config = registry.get(st_code, registry["TX"]) 
+def get_midland_data():
     try:
+        # 1. Weather (Midland)
         w_url = "https://api.open-meteo.com/v1/forecast"
-        w_params = {"latitude": config['lat'], "longitude": config['lon'], "current": ["shortwave_radiation", "wind_speed_10m"], "hourly": ["shortwave_radiation", "wind_speed_10m"], "timezone": config['tz']}
+        w_params = {"latitude": MIDLAND_LAT, "longitude": MIDLAND_LON, "current": ["shortwave_radiation", "wind_speed_10m"], "hourly": ["shortwave_radiation", "wind_speed_10m"], "timezone": "US/Central"}
         w_r = requests.get(w_url, params=w_params).json()
-        df_p = config['iso'].get_rtm_lmp(date="latest")
-        price_val = df_p[df_p['Location'] == config['hub']].iloc[-1]['LMP']
-        return price_val, w_r, config['hub'], config['acc']
+        
+        # 2. Price (ERCOT HB_WEST)
+        iso = gridstatus.Ercot()
+        df_p = iso.get_rtm_lmp(date="latest")
+        price_val = df_p[df_p['Location'] == "HB_WEST"].iloc[-1]['LMP']
+        
+        return price_val, w_r
     except Exception as e:
-        return 24.50, None, f"Fallback (Error: {str(e)})", 50
+        return 24.50, None
 
 # --- UI SETUP ---
-st.set_page_config(page_title="Asset Strategy Dashboard", layout="wide")
+st.set_page_config(page_title="Midland Asset Dashboard", layout="wide")
 
-with st.sidebar:
-    st.header("📍 Site Location")
-    u_city = st.text_input("City", value="Midland")
-    u_state = st.text_input("State", value="TX")
-    if st.button("Reset Configuration"):
-        for key in st.session_state.keys():
-            if key != "password_correct": del st.session_state[key]
-        st.rerun()
+price, w_data = get_midland_data()
 
-price, w_data, hub_node, acc_score = get_regional_data(u_city, u_state)
-
-# --- DASHBOARD SECTIONS ---
-st.subheader(f"🛰️ Grid Intelligence: {u_city}, {u_state}")
-ac1, ac2, ac3 = st.columns(3)
-ac1.metric("Selected Hub", hub_node)
-ac2.metric("Mapping Accuracy", f"{acc_score}%")
+# --- DASHBOARD ---
+st.title("⚡ Midland Asset Dashboard")
+ac1, ac2 = st.columns(2)
+ac1.metric("Pricing Node", "ERCOT HB_WEST")
 if w_data and price:
-    ac3.success("🟢 Data Feeds: Healthy")
+    ac2.success("🟢 Midland Data Feeds: Healthy")
 else:
-    ac3.error("🔴 Data Feeds: Fallback Mode")
+    ac2.error("🔴 Data Feeds: Fallback Mode")
 
 st.markdown("---")
 c1, c2, c3 = st.columns(3)
@@ -165,7 +145,7 @@ r2.metric("Est. IRR", f"{(ann_alpha/t_capex)*100 if t_capex>0 else 0:.1f}%")
 r3.metric("Annual Opt. Delta", f"${(ideal_v - curr_v):,.0f}", delta=f"{((ideal_v-curr_v)/curr_v)*100:.1f}% Upside")
 
 st.markdown("---")
-st.subheader("📊 Live Performance")
+st.subheader("📊 Live Midland Performance")
 ghi = w_data['current']['shortwave_radiation'] if w_data else 0
 ws = w_data['current']['wind_speed_10m'] if w_data else 0
 total_gen = (min(solar_cap * (ghi / 1000.0) * 0.85, solar_cap)) + (0 if (ws/3.6) < 3 else (wind_cap if (ws/3.6) >= 12 else (((ws/3.6)-3)/9)**3 * wind_cap))
