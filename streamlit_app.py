@@ -88,18 +88,16 @@ if not check_password(): st.stop()
 @st.cache_data(ttl=300)
 def get_midland_data():
     try:
-        # 1. Weather (Midland)
         w_url = "https://api.open-meteo.com/v1/forecast"
         w_params = {"latitude": MIDLAND_LAT, "longitude": MIDLAND_LON, "current": ["shortwave_radiation", "wind_speed_10m"], "hourly": ["shortwave_radiation", "wind_speed_10m"], "timezone": "US/Central"}
         w_r = requests.get(w_url, params=w_params).json()
         
-        # 2. Price (ERCOT HB_WEST)
         iso = gridstatus.Ercot()
         df_p = iso.get_rtm_lmp(date="latest")
         price_val = df_p[df_p['Location'] == "HB_WEST"].iloc[-1]['LMP']
         
         return price_val, w_r
-    except Exception as e:
+    except Exception:
         return 24.50, None
 
 # --- UI SETUP ---
@@ -109,12 +107,7 @@ price, w_data = get_midland_data()
 
 # --- DASHBOARD ---
 st.title("⚡ Midland Asset Dashboard")
-ac1, ac2 = st.columns(2)
-ac1.metric("Pricing Node", "ERCOT HB_WEST")
-if w_data and price:
-    ac2.success("🟢 Midland Data Feeds: Healthy")
-else:
-    ac2.error("🔴 Data Feeds: Fallback Mode")
+st.metric("Pricing Node", "ERCOT HB_WEST")
 
 st.markdown("---")
 c1, c2, c3 = st.columns(3)
