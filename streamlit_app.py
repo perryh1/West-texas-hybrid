@@ -28,53 +28,22 @@ def check_password():
         st.session_state.password_correct = False
     if st.session_state.password_correct: return True
     
-    # Executive Summary Login Page
-    st.title("⚡ The Hybrid Alpha Play")
-    st.subheader("Scaling Renewable Asset Yield")
-    
-    st.markdown("""
-    Most renewable projects operate as passive infrastructure—connecting to the grid and accepting whatever the market dictates. 
-    This application serves as the **economic brain** that transforms a standard wind or solar site into a high-frequency trading desk. 
-    The strategy focuses on **arbitraging grid volatility** to ensure no megawatt is ever wasted.
-    """)
-
-    st.markdown("---")
-    st.header("🍯 The 'Secret Sauce': The 123 on Hybrid Alpha")
-    st.info("**Core Value:** It’s the Dynamic Logic. The system creates a pivot that treats Bitcoin miners and batteries as a 'virtual load' that reacts to market conditions in milliseconds.")
-    
-    col1, col2 = st.columns(2)
-    with col1:
+    st.title("⚡ West Texas Asset Strategy Dashboard")
+    with st.expander("📖 System Overview & Data Sources", expanded=True):
         st.markdown("""
-        **🚀 Battle-Tested at Helios**
-        Integrates direct operational learnings from Helios, where hybrid energy theory was stress-tested against real-world mechanical and electrical constraints.
+        ### **How it Works**
+        This decision engine optimizes power flow between the **Grid**, **Miners**, and **Battery** to maximize yield.
         
-        **📊 5-Year High-Fidelity Training**
-        Trained on five years of 5-minute interval grid pricing data, weather patterns, and thermal variables to recognize market 'fingerprints'.
-        
-        **❄️ Uri-Proof Backtesting**
-        Proven during events like Winter Storm Uri; protected assets from negative pricing while capturing high-value spikes by predicting load shifts.
-        """)
-    
-    with col2:
-        st.markdown("""
-        **🧠 Predictive AI Battery Management**
-        Maintains charge levels by analyzing ambient temp, generation trends, and grid variables to ensure 'dry powder' for massive price spikes.
-        
-        **⚡ Real-Time Breakeven Reactivity**
-        Breakeven floor recalibrates instantly as Hashprice or Efficiency shifts. The asset trades against current reality, not yesterday's spreadsheets.
-        
-        **⏱️ The Interconnect Stop-Gap**
-        For BTM sites in the queue, this setup powers miners today—turning a 'waiting game' for agreements into a 'revenue game'.
-        """)
+        ### **Data Sources & Frequency**
+        * **☀️ Solar & 💨 Wind Data:** Pulled from the **Open-Meteo API** using high-resolution weather models for Midland, TX (31.997, -102.077).
+        * **💰 Market Pricing:** Real-time **ERCOT HB_WEST** electricity prices are pulled via the **gridstatus** library.
+        * **🔄 Refresh Rate:** All data is polled and recalculated every **5 minutes** to ensure live dispatch accuracy.
 
-    st.markdown("---")
-    st.header("⚙️ How the Alpha Layer Operates")
-    a1, a2, a3 = st.columns(3)
-    a1.metric("Live Telemetry", "5 Min Poll")
-    a2.metric("Hybrid Alpha", "Cash Gain")
-    a3.metric("ROI on Autopilot", "Real-Time IRR")
-
-    st.success("**The Bottom Line:** This is mining market inefficiency. The tool ensures every photon and every gust of wind is converted into the highest possible value—protecting the downside and capturing the upside in a reactive, real-time environment.")
+        ### **The Three Core Pillars**
+        1. **⚡ Grid (Base):** Revenue from selling 100% of generation to the market.
+        2. **⛏️ Mining Alpha:** Extra profit made by mining when BTC yield exceeds grid prices.
+        3. **🔋 Battery Alpha:** Yield from charging during negative prices and discharging during spikes.
+        """)
     
     st.markdown("---")
     pwd = st.text_input("Enter Access Password", type="password")
@@ -101,6 +70,7 @@ def get_live_and_history():
         r = requests.get(url, params=params).json()
         ghi, ws = r['current']['shortwave_radiation'], r['current']['wind_speed_10m']
         curr_h = datetime.now().hour
+        # Robust Logic for Night/Forecast Fallback
         if ghi <= 1.0 and 8 <= curr_h <= 17: ghi = r['hourly']['shortwave_radiation'][curr_h]
         if ws <= 1.0: ws = r['hourly']['wind_speed_10m'][curr_h]
         return price_hist, ghi, ws
@@ -212,5 +182,5 @@ def display_box(label, ma, ba, base):
 h1, h2, h3, h4 = st.columns(4)
 with h1: display_box("Last 24 Hours", ma24, ba24, g24)
 with h2: display_box("Last 7 Days", ma7, ba7, g7)
-with h3: display_box("Last 6 Months", BASE_REVENUE['6m_grid_solar']*0.5 + BASE_REVENUE['6m_grid_wind']*0.5, BASE_REVENUE['6m_mining_per_mw']*miner_mw*0.4, BASE_REVENUE['6m_batt_per_mw']*batt_mw)
+with h3: display_box("Last 6 Months", BASE_REVENUE['6m_mining_per_mw']*miner_mw*0.4, BASE_REVENUE['6m_batt_per_mw']*batt_mw, (BASE_REVENUE['6m_grid_solar']+BASE_REVENUE['6m_grid_wind'])*(solar_cap/100))
 with h4: display_box("Last 1 Year", ann_alpha, BASE_REVENUE['1y_batt_per_mw']*batt_mw, (BASE_REVENUE['1y_grid_solar']+BASE_REVENUE['1y_grid_wind'])*(solar_cap/100))
